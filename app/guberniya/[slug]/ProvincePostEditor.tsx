@@ -304,30 +304,6 @@ export default function ProvincePostEditor({
         {isEditing ? "Редактирование сообщения" : "Новое сообщение"}
       </h2>
       <form className={styles.form} onSubmit={handleSubmit} onKeyDown={handleFormKeyDown} noValidate>
-        <label htmlFor={titleId}>Заголовок сообщения</label>
-        <input
-          ref={titleRef}
-          id={titleId}
-          name="title"
-          className={styles.titleInput}
-          value={title}
-          maxLength={TITLE_MAX_LENGTH}
-          autoComplete="off"
-          spellCheck={false}
-          required
-          onChange={(event) => {
-            setTitle(event.target.value);
-            setStatus("");
-          }}
-        />
-
-        <span className={styles.bodyLabel}>Тело сообщения</span>
-        <RichTextField
-          ref={richTextFieldRef}
-          editor={editor}
-          hint="Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца."
-        />
-
         <div className={styles.meta}>
           <div className={styles.metaField}>
             <label htmlFor={categoryId}>Категория</label>
@@ -489,6 +465,30 @@ export default function ProvincePostEditor({
             Отмена
           </button>
         </div>
+
+        <label htmlFor={titleId}>Заголовок сообщения</label>
+        <input
+          ref={titleRef}
+          id={titleId}
+          name="title"
+          className={styles.titleInput}
+          value={title}
+          maxLength={TITLE_MAX_LENGTH}
+          autoComplete="off"
+          spellCheck={false}
+          required
+          onChange={(event) => {
+            setTitle(event.target.value);
+            setStatus("");
+          }}
+        />
+
+        <span className={styles.bodyLabel}>Тело сообщения</span>
+        <RichTextField
+          ref={richTextFieldRef}
+          editor={editor}
+          hint="Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца."
+        />
       </form>
     </section>
   );

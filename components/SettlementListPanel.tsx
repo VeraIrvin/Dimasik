@@ -19,6 +19,7 @@ type SettlementListPanelProps = {
 type SettlementRow = {
   id: string;
   name: string;
+  type: string | null;
   url: string;
   provinceName: string;
   /** Identical names need the province label to be told apart. */
@@ -47,6 +48,7 @@ export default function SettlementListPanel({
       .map((settlement) => ({
         id: settlement.id,
         name: settlement.name,
+        type: settlement.type,
         url: settlement.url,
         provinceName: provinceNames[settlement.guberniaId] ?? "",
         needsProvince: (nameCounts.get(settlement.name) ?? 0) > 1,
@@ -123,10 +125,10 @@ export default function SettlementListPanel({
                 onFocus={() => onHover(row.id)}
                 onBlur={() => onHover(null)}
               >
-                <span className={styles.rowName}>{row.name}</span>
-                {row.needsProvince && row.provinceName ? (
-                  <span className={styles.rowProvince}>{row.provinceName}</span>
-                ) : null}
+                <span className={styles.rowName}>
+                  {row.type ? `${row.type} ` : ""}{row.name}
+                  {row.needsProvince && row.provinceName ? ` · ${row.provinceName}` : null}
+                </span>
               </Link>
             </li>
           ))}

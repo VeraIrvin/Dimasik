@@ -81,6 +81,15 @@ export default function PostFeed({
           return (
             <article key={post.id} id={`post-${post.id}`} className={styles.post}>
               <h2 className={styles.postTitle}>{post.title}</h2>
+              {isAdmin ? (
+                <PostAdminControls
+                  guberniaId={guberniaId}
+                  post={post}
+                  provinces={provinces}
+                  settlements={settlements}
+                  categories={categories}
+                />
+              ) : null}
               {hasMetadata ? (
                 <dl className={styles.postMetadata}>
                   {post.category ? <><dt>Категория</dt><dd>{post.category}</dd></> : null}
@@ -100,15 +109,6 @@ export default function PostFeed({
                 </dl>
               ) : null}
               <PostBody body={post.body} />
-              {isAdmin ? (
-                <PostAdminControls
-                  guberniaId={guberniaId}
-                  post={post}
-                  provinces={provinces}
-                  settlements={settlements}
-                  categories={categories}
-                />
-              ) : null}
             </article>
           );
         }) : <p className={styles.noPosts}>{emptyMessage}</p>}

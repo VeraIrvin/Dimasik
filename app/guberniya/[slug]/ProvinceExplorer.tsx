@@ -32,6 +32,7 @@ export default function ProvinceExplorer({
   const [districtId, setDistrictId] = useState<string | null>(null);
   const [settlementId, setSettlementId] = useState<string | null>(null);
   const [year, setYear] = useState("");
+  const [category, setCategory] = useState("");
 
   const provinceSettlements = useMemo(
     () => settlements.filter((settlement) => settlement.guberniaId === gubernia.id),
@@ -58,13 +59,31 @@ export default function ProvinceExplorer({
     ),
     [gubernia.posts],
   );
+  // Configured categories keep their settings order; categories kept only by
+  // older posts stay selectable so every stored post remains filterable.
+  const categoryOptions = useMemo(
+    () => [
+      ...categories,
+      ...Array.from(
+        new Set(
+          gubernia.posts
+            .map((post) => post.category)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      )
+        .filter((option) => !categories.includes(option))
+        .sort((left, right) => left.localeCompare(right, "ru")),
+    ],
+    [categories, gubernia.posts],
+  );
   const visiblePosts = useMemo(
     () => gubernia.posts.filter((post) =>
       (!districtId || post.uyezdId === districtId) &&
       (!settlementId || post.settlementId === settlementId) &&
-      (!year || post.year === year),
+      (!year || post.year === year) &&
+      (!category || post.category === category),
     ),
-    [gubernia.posts, districtId, settlementId, year],
+    [gubernia.posts, districtId, settlementId, year, category],
   );
 
   const selectDistrict = useCallback((nextDistrictId: string | null) => {
@@ -103,21 +122,25 @@ export default function ProvinceExplorer({
     setDistrictId(null);
     setSettlementId(null);
     setYear("");
+    setCategory("");
   }
 
-  const hasFilters = districtId !== null || settlementId !== null || year !== "";
+  const hasFilters = districtId !== null || settlementId !== null || year !== "" || category !== "";
 
   const filterControlsProps = {
     districts,
     settlements: availableSettlements,
     years,
+    categories: categoryOptions,
     districtId,
     settlementId,
     year,
+    category,
     hasFilters,
     onDistrictChange: selectDistrict,
     onSettlementChange: selectSettlement,
     onYearChange: setYear,
+    onCategoryChange: setCategory,
     onReset: resetFilters,
   };
 

@@ -1,5 +1,7 @@
 .controls {
   margin-top: 14px;
+  /* The row sits under the record title, so it also needs air before the metadata. */
+  margin-bottom: 18px;
 }
 
 .actions {

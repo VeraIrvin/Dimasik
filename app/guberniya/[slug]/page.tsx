@@ -38,15 +38,6 @@ export default async function GuberniaPage({
         <h1 className={`content-page__title ${styles.title}`}>{gubernia.name}</h1>
       </header>
 
-      <ProvinceExplorer
-        gubernia={gubernia}
-        provinces={geoData.provinces}
-        settlements={geoData.settlements}
-        categories={settings.categories}
-        settlementTypes={settings.settlementTypes}
-        isAdmin={isAdmin}
-      />
-
       {isAdmin ? (
         <div className={styles.adminSettings}>
           <GuberniaAdminControls
@@ -56,6 +47,15 @@ export default async function GuberniaPage({
           />
         </div>
       ) : null}
+
+      <ProvinceExplorer
+        gubernia={gubernia}
+        provinces={geoData.provinces}
+        settlements={geoData.settlements}
+        categories={settings.categories}
+        settlementTypes={settings.settlementTypes}
+        isAdmin={isAdmin}
+      />
     </main>
   );
 }

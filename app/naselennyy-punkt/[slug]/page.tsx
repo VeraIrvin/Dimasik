@@ -11,6 +11,9 @@ import SettlementReferenceEditor from "./SettlementReferenceEditor";
 import SettlementPostExplorer from "./SettlementPostExplorer";
 import styles from "./page.module.css";
 
+/** Element id of the slot hosting the record's admin row, above the details. */
+const SETTLEMENT_ADMIN_SLOT_ID = "settlement-record-admin";
+
 // Publication state lives in the Rust backend, so every request must resolve
 // the settlement anew.
 export const dynamic = "force-dynamic";
@@ -63,6 +66,9 @@ export default async function SettlementPage({
 
       <SettlementBackNavigation href={backHref} />
 
+      {/* Admin row slot: «Редактировать/Удалить населённый пункт» above the details. */}
+      <div id={SETTLEMENT_ADMIN_SLOT_ID} />
+
       <dl className={styles.details}>
         <div className={styles.detail}>
           <dt className={styles.detailLabel}>Губерния</dt>
@@ -107,6 +113,7 @@ export default async function SettlementPage({
           guberniaId={gubernia.id}
           settlementName={settlement.name}
           backHref={backHref}
+          adminSlotId={SETTLEMENT_ADMIN_SLOT_ID}
         />
       </section>
 

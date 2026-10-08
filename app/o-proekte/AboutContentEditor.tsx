@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import PostBody from "@/app/guberniya/[slug]/PostBody";
 import RichTextField, {
@@ -35,6 +36,13 @@ type RichPageContentEditorProps = {
   saveErrorMessage: string;
   editLabel?: string;
   secondaryAction?: ReactNode;
+  /**
+   * Element id that receives the admin row instead of the block itself, so a
+   * record page can keep the row under its title while the editor stays in
+   * place. Until the page's markup is ready the row is withheld, and a missing
+   * slot falls back to the row's original place below the text.
+   */
+  adminActionsTargetId?: string;
 };
 
 /**
@@ -52,13 +60,21 @@ export function RichPageContentEditor({
   saveErrorMessage,
   editLabel = "Редактировать",
   secondaryAction,
+  adminActionsTargetId,
 }: RichPageContentEditorProps) {
   const router = useRouter();
   const [body, setBody] = useState<PostDocument | null>(initialBody);
   const [editing, setEditing] = useState(false);
   const [status, setStatus] = useState("");
   const [returnFocus, setReturnFocus] = useState(false);
+  const [adminRowTarget, setAdminRowTarget] = useState<HTMLElement | null | undefined>(undefined);
   const editButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!adminActionsTargetId) return;
+    // The page renders the slot; portaling keeps one state for row and editor.
+    setAdminRowTarget(document.getElementById(adminActionsTargetId));
+  }, [adminActionsTargetId]);
 
   useEffect(() => {
     if (!returnFocus || editing || !isAdmin) return;
@@ -82,6 +98,26 @@ export function RichPageContentEditor({
     setStatus("Изменения сохранены.");
     finishEditing();
     router.refresh();
+  }
+
+  const adminActions = isAdmin && !editing ? (
+    <div className={styles.adminActions}>
+      <button
+        ref={editButtonRef}
+        className={styles.editButton}
+        type="button"
+        onClick={startEditing}
+      >
+        {editLabel}
+      </button>
+      {secondaryAction}
+    </div>
+  ) : null;
+
+  /** Record pages host the row in the page's own slot; everything else keeps it here. */
+  function renderAdminActions() {
+    if (!adminActionsTargetId || adminRowTarget === null) return adminActions;
+    return adminRowTarget ? createPortal(adminActions, adminRowTarget) : null;
   }
 
   return (
@@ -111,19 +147,7 @@ export function RichPageContentEditor({
         </p>
       ) : null}
 
-      {isAdmin && !editing ? (
-        <div className={styles.adminActions}>
-          <button
-            ref={editButtonRef}
-            className={styles.editButton}
-            type="button"
-            onClick={startEditing}
-          >
-            {editLabel}
-          </button>
-          {secondaryAction}
-        </div>
-      ) : null}
+      {renderAdminActions()}
     </section>
   );
 }

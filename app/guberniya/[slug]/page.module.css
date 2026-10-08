@@ -94,9 +94,14 @@
 }
 
 .composer,
-.description,
+.description {
+  max-width: 800px;
+}
+
+/* Record admin panel sits under the page header, before the uyezd map. */
 .adminSettings {
   max-width: 800px;
+  margin-top: 24px;
 }
 
 .composer {
@@ -111,7 +116,7 @@
 
 .filterControls {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
   gap: 14px;
   align-items: end;
   min-width: 0;
@@ -201,8 +206,7 @@
 }
 
 .withPosts .composer,
-.withPosts .description,
-.withPosts .adminSettings {
+.withPosts .description {
   margin-left: 266px;
 }
 
@@ -215,14 +219,9 @@
   white-space: nowrap;
 }
 
-.adminSettings {
-  margin-top: 76px;
-}
-
 @media (max-width: 900px) {
   .withPosts .composer,
-  .withPosts .description,
-  .withPosts .adminSettings {
+  .withPosts .description {
     margin-left: 216px;
   }
 
@@ -250,8 +249,7 @@
   }
 
   .withPosts .composer,
-  .withPosts .description,
-  .withPosts .adminSettings {
+  .withPosts .description {
     margin-left: 0;
   }
 

@@ -8,14 +8,17 @@ type Props = {
   districts: DistrictOption[];
   settlements: Settlement[];
   years: string[];
+  categories: string[];
   districtId: string | null;
   settlementId: string | null;
   year: string;
+  category: string;
   hasFilters: boolean;
   compact?: boolean;
   onDistrictChange: (districtId: string | null) => void;
   onSettlementChange: (settlementId: string | null) => void;
   onYearChange: (year: string) => void;
+  onCategoryChange: (category: string) => void;
   onReset: () => void;
 };
 
@@ -24,14 +27,17 @@ export default function ProvinceFilterControls({
   districts,
   settlements,
   years,
+  categories,
   districtId,
   settlementId,
   year,
+  category,
   hasFilters,
   compact = false,
   onDistrictChange,
   onSettlementChange,
   onYearChange,
+  onCategoryChange,
   onReset,
 }: Props) {
   return (
@@ -67,6 +73,17 @@ export default function ProvinceFilterControls({
         <select id={`${idPrefix}-year`} value={year} onChange={(event) => onYearChange(event.target.value)}>
           <option value="">Все годы</option>
           {years.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      </div>
+      <div className={styles.filterField}>
+        <label htmlFor={`${idPrefix}-category`}>Категория</label>
+        <select
+          id={`${idPrefix}-category`}
+          value={category}
+          onChange={(event) => onCategoryChange(event.target.value)}
+        >
+          <option value="">Все категории</option>
+          {categories.map((option) => <option key={option} value={option}>{option}</option>)}
         </select>
       </div>
       <button className={styles.resetFilters} type="button" onClick={onReset} disabled={!hasFilters}>

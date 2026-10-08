@@ -47,6 +47,45 @@
   border-color: #6f5a2b;
 }
 
+/* The page-address prefix is fixed chrome, not an editable value: the wrapper
+   draws the input frame and the prefix only labels the slug part. */
+.addressField {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  margin-bottom: 7px;
+  border: 1px solid #c9c7c0;
+  border-radius: 3px;
+  background: #fff;
+}
+
+.addressField:focus-within {
+  border-color: #6f5a2b;
+}
+
+.addressPrefix {
+  display: flex;
+  align-items: center;
+  padding: 9px 0 9px 10px;
+  font-size: 15px;
+  color: var(--muted, #75736c);
+}
+
+.addressInput {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 10px 9px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+}
+
+.addressInput:focus-visible {
+  outline: none;
+}
+
 .fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

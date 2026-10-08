@@ -13,12 +13,16 @@ type SettlementReferenceEditorProps = {
   guberniaId: string;
   settlementName: string;
   backHref: string;
+  /** Element id of the page slot that hosts the admin row, above the details. */
+  adminSlotId: string;
 };
 
 /**
  * Public reference block of a settlement page. Every visitor sees the stored
  * text or a short empty note; only the admin gets the shared rich-text editor
- * plus the adjacent settlement removal action.
+ * plus the adjacent settlement removal action. The admin row itself renders in
+ * the record's header slot, so it sits under the page title, before the Уезд
+ * row, while the editor stays with the text.
  */
 export default function SettlementReferenceEditor({
   slug,
@@ -28,6 +32,7 @@ export default function SettlementReferenceEditor({
   guberniaId,
   settlementName,
   backHref,
+  adminSlotId,
 }: SettlementReferenceEditorProps) {
   return (
     <RichPageContentEditor
@@ -37,6 +42,7 @@ export default function SettlementReferenceEditor({
       ariaLabel="Справочная информация"
       editorLabel="Текст справки"
       editLabel="Редактировать населённый пункт"
+      adminActionsTargetId={adminSlotId}
       emptyState={<p className={styles.emptyState}>Справочная информация пока не добавлена.</p>}
       emptyValidationMessage="Добавьте текст справки."
       saveErrorMessage="Не удалось сохранить справочные сведения. Попробуйте ещё раз."

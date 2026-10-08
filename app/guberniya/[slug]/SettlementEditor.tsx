@@ -9,15 +9,16 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import type { PublishedOption } from "@/lib/gubernia-publications";
+import {
+  SETTLEMENT_URL_PREFIX,
+  SETTLEMENT_URL_SLUG_MAX_LENGTH,
+  isValidSettlementSlug,
+  settlementUrlForSlug,
+} from "@/lib/settlement-url";
 import { useDistrictOptions } from "./useDistrictOptions";
 import styles from "./SettlementEditor.module.css";
 
 const NAME_MAX_LENGTH = 200;
-// Mirrors the store's validateSettlementUrl: the prefix plus a slug of at most 100 characters.
-const SETTLEMENT_URL_PREFIX = "/naselennyy-punkt/";
-const SETTLEMENT_URL_SLUG_MAX_LENGTH = 100;
-const URL_MAX_LENGTH = SETTLEMENT_URL_PREFIX.length + SETTLEMENT_URL_SLUG_MAX_LENGTH;
-const SETTLEMENT_URL_PATTERN = /^\/naselennyy-punkt\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 type SettlementEditorProps = {
   guberniaId: string;
@@ -59,7 +60,7 @@ export default function SettlementEditor({
   const router = useRouter();
   const headingId = useId();
   const nameId = useId();
-  const urlId = useId();
+  const slugId = useId();
   const provinceId = useId();
   const districtId = useId();
   const typeId = useId();
@@ -70,12 +71,12 @@ export default function SettlementEditor({
   const [selectedDistrictId, setSelectedDistrictId] = useState("");
   const [typeValue, setTypeValue] = useState("");
   const [coordinates, setCoordinates] = useState("");
-  const [url, setUrl] = useState("");
+  const [slug, setSlug] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
-  const urlRef = useRef<HTMLInputElement>(null);
+  const slugRef = useRef<HTMLInputElement>(null);
   const provinceRef = useRef<HTMLSelectElement>(null);
   const districtRef = useRef<HTMLSelectElement>(null);
   const typeRef = useRef<HTMLSelectElement>(null);
@@ -86,7 +87,7 @@ export default function SettlementEditor({
 
   function resetDraft() {
     setName("");
-    setUrl("");
+    setSlug("");
     setSelectedProvinceId(guberniaId);
     setSelectedDistrictId("");
     setTypeValue("");
@@ -115,23 +116,23 @@ export default function SettlementEditor({
       nameRef.current?.focus();
       return;
     }
-    const nextUrl = url.trim();
-    if (!nextUrl) {
+    const nextSlug = slug.trim();
+    if (!nextSlug) {
       setStatus("");
       setError("Укажите адрес страницы населённого пункта.");
-      urlRef.current?.focus();
+      slugRef.current?.focus();
       return;
     }
-    if (nextUrl.length > URL_MAX_LENGTH) {
+    if (nextSlug.length > SETTLEMENT_URL_SLUG_MAX_LENGTH) {
       setStatus("");
-      setError(`Адрес страницы должен быть не длиннее ${URL_MAX_LENGTH} символов.`);
-      urlRef.current?.focus();
+      setError(`Адрес страницы должен быть не длиннее ${SETTLEMENT_URL_SLUG_MAX_LENGTH} символов.`);
+      slugRef.current?.focus();
       return;
     }
-    if (!SETTLEMENT_URL_PATTERN.test(nextUrl)) {
+    if (!isValidSettlementSlug(nextSlug)) {
       setStatus("");
-      setError("Адрес должен начинаться с /naselennyy-punkt/ и содержать только строчные латинские буквы, цифры и дефисы.");
-      urlRef.current?.focus();
+      setError("Адрес должен содержать только строчные латинские буквы, цифры и одиночные дефисы.");
+      slugRef.current?.focus();
       return;
     }
     if (!selectedProvinceId) {
@@ -184,7 +185,7 @@ export default function SettlementEditor({
             name: nextName,
             uyezdId: selectedDistrictId,
             type: typeValue,
-            url: nextUrl,
+            url: settlementUrlForSlug(nextSlug),
             coordinates: `${parsed.latitude}, ${parsed.longitude}`,
           }),
         },
@@ -252,25 +253,28 @@ export default function SettlementEditor({
           }}
         />
 
-        <label htmlFor={urlId}>Адрес страницы</label>
-        <input
-          ref={urlRef}
-          id={urlId}
-          name="url"
-          className={styles.input}
-          type="text"
-          value={url}
-          maxLength={URL_MAX_LENGTH}
-          placeholder="/naselennyy-punkt/ivanovo"
-          autoComplete="off"
-          autoCapitalize="none"
-          spellCheck={false}
-          required
-          onChange={(event) => {
-            setUrl(event.target.value);
-            setStatus("");
-          }}
-        />
+        <label htmlFor={slugId}>Адрес страницы</label>
+        <div className={styles.addressField}>
+          <span className={styles.addressPrefix}>{SETTLEMENT_URL_PREFIX}</span>
+          <input
+            ref={slugRef}
+            id={slugId}
+            name="slug"
+            className={styles.addressInput}
+            type="text"
+            value={slug}
+            maxLength={SETTLEMENT_URL_SLUG_MAX_LENGTH}
+            placeholder="ivanovo"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            required
+            onChange={(event) => {
+              setSlug(event.target.value);
+              setStatus("");
+            }}
+          />
+        </div>
         <p className={styles.hint}>
           Локальный адрес латиницей: строчные буквы, цифры и дефисы.
         </p>

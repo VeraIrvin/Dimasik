@@ -61,6 +61,13 @@
   border-top: 1px solid #e4e1d9;
 }
 
+/* Metadata leads the form, directly under the heading: no extra separator. */
+.form > .meta:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
 .metaField {
   display: grid;
   gap: 4px;
