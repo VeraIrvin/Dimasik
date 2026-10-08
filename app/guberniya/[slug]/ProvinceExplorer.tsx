@@ -1,0 +1,186 @@
+"use client";
+
+import { useCallback, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import type { PublishedGubernia, PublishedOption, Settlement } from "@/lib/gubernia-publications";
+import UyezdsMap from "@/components/UyezdsMap";
+import AdminCreationPanel from "./AdminCreationPanel";
+import PostFeed from "./PostFeed";
+import ProvinceFilterControls, { type DistrictOption } from "./ProvinceFilterControls";
+import ProvinceQuickNavigation from "./ProvinceQuickNavigation";
+import styles from "./page.module.css";
+
+type Props = {
+  gubernia: PublishedGubernia;
+  provinces: PublishedOption[];
+  settlements: Settlement[];
+  categories: string[];
+  settlementTypes: string[];
+  isAdmin: boolean;
+};
+
+export default function ProvinceExplorer({
+  gubernia,
+  provinces,
+  settlements,
+  categories,
+  settlementTypes,
+  isAdmin,
+}: Props) {
+  const router = useRouter();
+  const [districts, setDistricts] = useState<DistrictOption[]>([]);
+  const [districtId, setDistrictId] = useState<string | null>(null);
+  const [settlementId, setSettlementId] = useState<string | null>(null);
+  const [year, setYear] = useState("");
+
+  const provinceSettlements = useMemo(
+    () => settlements.filter((settlement) => settlement.guberniaId === gubernia.id),
+    [gubernia.id, settlements],
+  );
+  const settlementById = useMemo(
+    () => new Map(provinceSettlements.map((settlement) => [settlement.id, settlement])),
+    [provinceSettlements],
+  );
+  const districtNames = useMemo(
+    () =>
+      Object.fromEntries(
+        districts.map((district): [string, string] => [district.id, district.name]),
+      ),
+    [districts],
+  );
+  const availableSettlements = useMemo(
+    () => provinceSettlements.filter((settlement) => !districtId || settlement.uyezdId === districtId),
+    [provinceSettlements, districtId],
+  );
+  const years = useMemo(
+    () => Array.from(new Set(gubernia.posts.map((post) => post.year).filter(Boolean))).sort(
+      (left, right) => right.localeCompare(left, "ru", { numeric: true }),
+    ),
+    [gubernia.posts],
+  );
+  const visiblePosts = useMemo(
+    () => gubernia.posts.filter((post) =>
+      (!districtId || post.uyezdId === districtId) &&
+      (!settlementId || post.settlementId === settlementId) &&
+      (!year || post.year === year),
+    ),
+    [gubernia.posts, districtId, settlementId, year],
+  );
+
+  const selectDistrict = useCallback((nextDistrictId: string | null) => {
+    const selectedId = nextDistrictId !== null && nextDistrictId === districtId
+      ? null
+      : nextDistrictId;
+    setDistrictId(selectedId);
+    setSettlementId((previous) =>
+      previous && selectedId && settlementById.get(previous)?.uyezdId === selectedId
+        ? previous
+        : null,
+    );
+  }, [districtId, settlementById]);
+
+  const selectSettlement = useCallback((nextSettlementId: string | null) => {
+    const settlement = nextSettlementId && nextSettlementId !== settlementId
+      ? settlementById.get(nextSettlementId)
+      : null;
+    setSettlementId(settlement?.id ?? null);
+    if (settlement) setDistrictId(settlement.uyezdId);
+  }, [settlementById, settlementId]);
+
+  // Map marker clicks open the settlement page instead of filtering the feed. The
+  // destination is the address stored with the published settlement, so legacy entries
+  // keep their id-based address; unknown ids simply do nothing.
+  const openSettlement = useCallback((nextSettlementId: string) => {
+    const settlement = settlementById.get(nextSettlementId);
+    if (settlement) router.push(`${settlement.url}?from=province`);
+  }, [router, settlementById]);
+
+  const updateDistricts = useCallback((options: DistrictOption[]) => {
+    setDistricts(options);
+  }, []);
+
+  function resetFilters() {
+    setDistrictId(null);
+    setSettlementId(null);
+    setYear("");
+  }
+
+  const hasFilters = districtId !== null || settlementId !== null || year !== "";
+
+  const filterControlsProps = {
+    districts,
+    settlements: availableSettlements,
+    years,
+    districtId,
+    settlementId,
+    year,
+    hasFilters,
+    onDistrictChange: selectDistrict,
+    onSettlementChange: selectSettlement,
+    onYearChange: setYear,
+    onReset: resetFilters,
+  };
+
+  return (
+    <>
+      <ProvinceQuickNavigation>
+        <ProvinceFilterControls idPrefix="province-toolbar" compact {...filterControlsProps} />
+      </ProvinceQuickNavigation>
+
+      <div className={styles.provinceMap} id="province-map">
+        <UyezdsMap
+          guberniaId={gubernia.id}
+          guberniaName={gubernia.name}
+          settlements={provinceSettlements}
+          selectedDistrictId={districtId}
+          selectedSettlementId={settlementId}
+          onDistrictSelect={selectDistrict}
+          onSettlementOpen={openSettlement}
+          onDistrictsLoad={updateDistricts}
+        />
+      </div>
+
+      <section
+        className={styles.filters}
+        id="province-post-filters"
+        aria-label="Фильтры сообщений"
+      >
+        <ProvinceFilterControls idPrefix="province-post" {...filterControlsProps} />
+      </section>
+
+      {isAdmin ? (
+        <div className={styles.composer}>
+          <AdminCreationPanel
+            guberniaId={gubernia.id}
+            provinces={provinces}
+            settlements={settlements}
+            categories={categories}
+            settlementTypes={settlementTypes}
+          />
+        </div>
+      ) : null}
+
+      {gubernia.description ? (
+        <p className={`content-page__text ${styles.description}`}>{gubernia.description}</p>
+      ) : null}
+
+      {gubernia.posts.length > 0 ? (
+        <PostFeed
+          posts={visiblePosts}
+          guberniaId={gubernia.id}
+          provinces={provinces}
+          settlements={settlements}
+          categories={categories}
+          districtNames={districtNames}
+          isAdmin={isAdmin}
+          ariaLabel="Сообщения губернии"
+          emptyMessage="По выбранным фильтрам сообщений нет."
+          keepSidebarWhenEmpty
+        />
+      ) : null}
+      <span className={styles.visuallyHidden} role="status">
+        {hasFilters ? `Показано сообщений: ${visiblePosts.length}.` : ""}
+      </span>
+    </>
+  );
+}

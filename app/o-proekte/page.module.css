@@ -1,0 +1,112 @@
+.back {
+  margin-top: 0;
+}
+
+.eyebrow {
+  margin-top: 28px;
+}
+
+.credits {
+  margin-top: 64px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+}
+
+.sourceIntro {
+  max-width: 66ch;
+  margin: 0 0 28px;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.sources {
+  display: grid;
+  gap: 28px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 14px;
+}
+
+.sourceNumber {
+  padding-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sourceAuthors {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.source cite {
+  display: block;
+  max-width: 62ch;
+  color: var(--ink);
+  font-size: 16px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+.sourceMeta {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.sourceDataLink {
+  display: block;
+  width: fit-content;
+  margin-top: 6px;
+  white-space: nowrap;
+}
+
+.source a,
+.author a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.source a:hover,
+.author a:hover {
+  color: var(--accent);
+}
+
+.author {
+  margin-top: 32px;
+}
+
+.author p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .credits {
+    margin-top: 48px;
+  }
+
+  .source {
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .source cite {
+    font-size: 15px;
+  }
+}

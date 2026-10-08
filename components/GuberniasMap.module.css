@@ -1,0 +1,621 @@
+.shell {
+  position: relative;
+  isolation: isolate;
+  flex: 1 1 auto;
+  min-height: 360px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper, #f7f6f2);
+  color: var(--ink, #272622);
+}
+
+.viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Two classes so the MapLibre base stylesheet cannot re-position the canvas host. */
+.shell .map {
+  position: absolute;
+  inset: 0;
+  background: #f7f6f2;
+}
+
+.shell :global(.maplibregl-canvas:focus) {
+  outline: none;
+}
+
+.shell :global(.maplibregl-canvas:focus-visible) {
+  outline: 2px solid #6e6557;
+  outline-offset: -3px;
+}
+
+.shell :global(.maplibregl-ctrl-group) {
+  overflow: hidden;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: none;
+}
+
+.shell :global(.maplibregl-ctrl-group button) {
+  width: 32px;
+  height: 32px;
+}
+
+.shell :global(.maplibregl-ctrl-group button + button) {
+  border-top: 1px solid #ece7db;
+}
+
+.shell :global(.maplibregl-ctrl-group button:hover) {
+  background: #f3efe6;
+}
+
+.shell :global(.maplibregl-ctrl-scale) {
+  padding: 1px 6px;
+  border: 1px solid #b9b3a6;
+  border-top: 0;
+  border-radius: 0 0 3px 3px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #4a4438;
+  font-size: 10px;
+}
+
+.periodCaption {
+  position: absolute;
+  top: 24px;
+  right: clamp(16px, 5.2vw, 88px);
+  z-index: 2;
+  display: grid;
+  gap: 5px;
+  text-align: right;
+  pointer-events: none;
+}
+
+.periodCaption span {
+  color: var(--muted, #75736c);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.periodCaption strong {
+  font-size: 18px;
+  font-weight: 450;
+  letter-spacing: -0.02em;
+}
+
+/* Two homepage tabs over the canvas; the active one follows aria-pressed. */
+.viewSwitch {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 4;
+  display: flex;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(8px);
+  transform: translateX(-50%);
+}
+
+.viewSwitchButton {
+  padding: 10px 21px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: #4c463a;
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.viewSwitchButton:hover:enabled {
+  background: #f3efe6;
+}
+
+.viewSwitchButton:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: 2px;
+}
+
+.viewSwitchButton[aria-pressed='true'] {
+  border-color: #ddcf9f;
+  background: #f6efdd;
+  color: #6f5a2b;
+}
+
+.viewSwitchButton:disabled {
+  color: #9b9890;
+  cursor: default;
+}
+
+/*
+ * The settlement tab shows the neutral silhouette alone, so the governorate
+ * list leaves the screen with it. The shared extent control stays: it flips
+ * the active tab between the published governorates and the whole empire.
+ */
+.settlementView .guberniasPanel {
+  display: none;
+}
+
+/*
+ * Persistent overlay, not a layout column: the map keeps the full viewport
+ * behind it on every breakpoint. Rows are links to the governorate pages.
+ */
+.guberniasPanel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  width: fit-content;
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
+  padding: 10px 10px 8px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+}
+
+.panelHeading {
+  padding: 0 4px 7px;
+}
+
+.panelHeading h2 {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted, #75736c);
+}
+
+.guberniasList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+/* Mouse hover and keyboard focus resolve to one shared hover state. */
+.guberniaLink {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 3px;
+  font-size: 13.5px;
+  line-height: 1.3;
+  color: var(--ink, #272622);
+  text-decoration: none;
+}
+
+.guberniaLink:hover,
+.guberniaLinkHovered {
+  background: #f6efdd;
+  color: #6f5a2b;
+}
+
+/* Admin-only final row; the public list never renders it. */
+.addRow {
+  margin-top: 5px;
+  padding-top: 6px;
+  border-top: 1px solid #ece7db;
+}
+
+.addButton {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px dashed #cfc6b2;
+  border-radius: 3px;
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.3;
+  color: #6f5a2b;
+  text-align: left;
+  cursor: pointer;
+}
+
+.addButton:hover:enabled {
+  background: #f6efdd;
+}
+
+.addButton:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: 2px;
+}
+
+.addButton:disabled {
+  border-color: #e4e0d6;
+  color: #9b9890;
+  cursor: default;
+}
+
+.extentPanel {
+  position: absolute;
+  left: 16px;
+  bottom: 48px;
+  z-index: 2;
+}
+
+.extentButton {
+  display: grid;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.96);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+.extentButton:hover:enabled {
+  background: #f3efe6;
+}
+
+.extentButton:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: 2px;
+}
+
+.extentButton:disabled {
+  cursor: default;
+  color: #9b9890;
+}
+
+/* The button also reflects which extent the map currently shows. */
+.extentButton[aria-pressed='true'] {
+  border-color: #a08a51;
+  background: #f6efdd;
+}
+
+.extentTitle {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.extentHint {
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted, #75736c);
+}
+
+/* Retry for a failed district load; the rest of the map stays usable. */
+.retryButton {
+  margin-top: 6px;
+  padding: 7px 14px;
+  border: 1px solid #cfc6b2;
+  border-radius: 3px;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+  color: #6f5a2b;
+  cursor: pointer;
+}
+
+.retryButton:hover {
+  background: #f6efdd;
+}
+
+.retryButton:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: 2px;
+}
+
+.statePanel,
+.errorPanel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 4;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  max-width: min(420px, calc(100% - 32px));
+  padding: 12px 16px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: none;
+  font-size: 14px;
+  color: var(--ink, #272622);
+  transform: translate(-50%, -50%);
+}
+
+.errorPanel {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  border-color: #e2b9a8;
+  background: #fdf4f0;
+  text-align: left;
+}
+
+.errorPanel strong {
+  font-size: 15px;
+}
+
+.errorPanel span {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #7c5347;
+}
+
+.loader {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ded7c8;
+  border-top-color: #8d8577;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Compact native modal: the dialog itself stays unpadded so a click on the
+   backdrop (which targets the dialog element) never lands inside the form. */
+.createDialog {
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: #ffffff;
+  color: var(--ink, #272622);
+}
+
+.createDialog::backdrop {
+  background: rgba(39, 38, 34, 0.35);
+}
+
+/* Admin settlement dialog: the reused editor keeps its own form and padding. */
+.settlementDialog {
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: #ffffff;
+  color: var(--ink, #272622);
+}
+
+.settlementDialog::backdrop {
+  background: rgba(39, 38, 34, 0.35);
+}
+
+/* The compact editor drops its own section chrome, so the body pads it. */
+.settlementDialogBody {
+  padding: 18px 18px 20px;
+}
+
+.createForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.createForm h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.createHint {
+  margin: -6px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted, #75736c);
+}
+
+.createField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #75736c);
+}
+
+.createField select,
+.createField input {
+  padding: 7px 8px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 3px;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13.5px;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink, #272622);
+}
+
+.createField select:focus-visible,
+.createField input:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: 1px;
+}
+
+.createError {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #7c5347;
+}
+
+.createActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.createCancel,
+.createSubmit {
+  padding: 7px 12px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 3px;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.createCancel:hover {
+  background: #f3efe6;
+}
+
+.createSubmit {
+  border-color: #a08a51;
+  background: #f6efdd;
+  color: #6f5a2b;
+}
+
+.createSubmit:hover:enabled {
+  background: #efe4c9;
+}
+
+.createCancel:focus-visible,
+.createSubmit:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: 2px;
+}
+
+.createSubmit:disabled {
+  border-color: #e4e0d6;
+  background: #f4f2ec;
+  color: #9b9890;
+  cursor: default;
+}
+
+
+@media (max-width: 560px) {
+  .shell {
+    min-height: 320px;
+  }
+
+  /* Two columns keep all ten rows visible without hiding the list. */
+  .guberniasPanel {
+    top: 10px;
+    right: 10px;
+    left: 10px;
+    width: auto;
+    /* The desktop max-width must not narrow the two-column phone layout. */
+    max-width: none;
+    max-height: calc(100% - 20px);
+    padding: 8px 8px 7px;
+  }
+
+  .panelHeading {
+    padding: 0 3px 6px;
+  }
+
+  .guberniasList {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 6px;
+  }
+
+  .guberniaLink {
+    padding: 5px 7px;
+    font-size: 12.5px;
+  }
+
+  .addButton {
+    padding: 5px 7px;
+    font-size: 12.5px;
+  }
+
+  /* Sits above the zoom control, clear of the panel and the scale control. */
+  .periodCaption {
+    top: auto;
+    right: 12px;
+    bottom: 84px;
+  }
+
+  .periodCaption span {
+    font-size: 9px;
+  }
+
+  .periodCaption strong {
+    font-size: 13px;
+  }
+
+  /* Sits above the scale control so both stay tappable on phones. */
+  .extentPanel {
+    right: auto;
+    bottom: 62px;
+    left: 10px;
+  }
+
+  .extentButton {
+    padding: 7px 10px;
+  }
+
+  .extentTitle {
+    font-size: 12px;
+  }
+
+  /* Centered tabs stay clear of the extent button above the scale control. */
+  .viewSwitch {
+    bottom: 12px;
+    gap: 2px;
+    padding: 3px;
+  }
+
+  .viewSwitchButton {
+    padding: 9px 13px;
+    font-size: 13.5px;
+  }
+
+  .statePanel,
+  .errorPanel {
+    font-size: 13px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loader {
+    animation: none;
+  }
+}

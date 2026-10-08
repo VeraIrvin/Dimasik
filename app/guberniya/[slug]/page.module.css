@@ -1,0 +1,297 @@
+.page {
+  width: min(1160px, calc(100% - 64px));
+  margin: clamp(48px, 9vh, 100px) auto 104px;
+}
+
+.header {
+  margin-bottom: 20px;
+}
+
+.back {
+  margin-top: 0;
+}
+
+.floatingNavigation {
+  position: fixed;
+  z-index: 10;
+  top: 0;
+  left: 50%;
+  display: flex;
+  flex-wrap: wrap;
+  width: min(1160px, calc(100% - 64px));
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  transform: translateX(-50%);
+}
+
+.floatingNavigationBackOnly {
+  left: max(18px, calc((100vw - 1160px) / 2));
+  width: max-content;
+  max-width: calc(100% - 36px);
+  transform: none;
+}
+
+.floatingBack {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.floatingBack:hover,
+.floatingBack:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.floatingMap {
+  position: fixed;
+  z-index: 10;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.floatingMap:hover,
+.floatingMap:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.eyebrow {
+  margin: 28px 0 0;
+}
+
+.provinceMap {
+  margin-top: 0;
+  scroll-margin-top: 100px;
+}
+
+.title {
+  max-width: 800px;
+  margin: 20px 0 0;
+}
+
+.composer,
+.description,
+.adminSettings {
+  max-width: 800px;
+}
+
+.composer {
+  margin-bottom: 52px;
+}
+
+.filters {
+  margin-bottom: 36px;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.filterControls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 14px;
+  align-items: end;
+  min-width: 0;
+}
+
+.compactFilterControls {
+  display: flex;
+  flex: 1 1 460px;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.compactFilterControls .filterField {
+  flex: 1 1 150px;
+  gap: 5px;
+}
+
+.compactFilterControls .filterField label {
+  font-size: 10px;
+  letter-spacing: .06em;
+}
+
+.compactFilterControls .filterField select,
+.compactFilterControls .resetFilters {
+  min-height: 34px;
+}
+
+.compactFilterControls .resetFilters {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.filterField {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.filterField label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.filterField select {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.resetFilters {
+  min-height: 38px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.resetFilters:hover:enabled {
+  background: #f3efe6;
+}
+
+.resetFilters:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.description {
+  margin: 0 0 48px;
+  white-space: pre-line;
+}
+
+.withPosts .composer,
+.withPosts .description,
+.withPosts .adminSettings {
+  margin-left: 266px;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.adminSettings {
+  margin-top: 76px;
+}
+
+@media (max-width: 900px) {
+  .withPosts .composer,
+  .withPosts .description,
+  .withPosts .adminSettings {
+    margin-left: 216px;
+  }
+
+  .provinceMap {
+    scroll-margin-top: 160px;
+  }
+
+  .filterControls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .compactFilterControls {
+    flex: 1 1 380px;
+  }
+
+  .compactFilterControls .filterField {
+    flex: 1 1 118px;
+  }
+}
+
+@media (max-width: 700px) {
+  .page {
+    width: min(100% - 36px, 760px);
+    margin: 38px auto 72px;
+  }
+
+  .withPosts .composer,
+  .withPosts .description,
+  .withPosts .adminSettings {
+    margin-left: 0;
+  }
+
+  .floatingNavigation {
+    gap: 8px 10px;
+    width: min(calc(100% - 24px), 760px);
+    padding: 8px 10px;
+  }
+
+  .floatingNavigationBackOnly {
+    left: 18px;
+    width: max-content;
+  }
+
+  .compactFilterControls {
+    display: grid;
+    flex: 1 1 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 10px;
+  }
+
+  .header {
+    margin-bottom: 32px;
+  }
+
+  .title {
+    margin-top: 20px;
+  }
+
+  .filterControls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .resetFilters {
+    width: 100%;
+    white-space: normal;
+  }
+
+  .provinceMap {
+    scroll-margin-top: 220px;
+  }
+}

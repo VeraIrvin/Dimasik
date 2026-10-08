@@ -1,0 +1,126 @@
+.controls {
+  margin-top: 14px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.editButton,
+.deleteButton,
+.cancelButton,
+.confirmButton {
+  padding: 8px 11px;
+  border-radius: 3px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.editButton {
+  border: 1px solid #c9c7c0;
+  background: transparent;
+  color: inherit;
+}
+
+.editButton:hover:enabled {
+  background: #f3efe6;
+}
+
+/* Quiet destructive action: outlined until the admin confirms in the dialog. */
+.deleteButton {
+  border: 1px solid #c9b6ae;
+  background: transparent;
+  color: #8d3c32;
+}
+
+.deleteButton:hover:enabled {
+  border-color: #b08a7d;
+  background: #fdf4f0;
+}
+
+.editButton:disabled,
+.deleteButton:disabled,
+.cancelButton:disabled,
+.confirmButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.error {
+  margin: 0;
+  color: #8d3c32;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(39, 38, 34, 0.17);
+}
+
+.dialog {
+  width: min(380px, 100%);
+  padding: 22px;
+  border: 1px solid #d5d1c7;
+  border-radius: 4px;
+  background: #faf9f5;
+  color: var(--ink, #272622);
+}
+
+.dialog h3 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.question {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #55514a;
+}
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.cancelButton {
+  border: 1px solid #c9c7c0;
+  background: transparent;
+  color: inherit;
+}
+
+.cancelButton:hover:enabled {
+  background: #f3efe6;
+}
+
+.confirmButton {
+  border: 1px solid #8d3c32;
+  background: #8d3c32;
+  color: #fff;
+}
+
+.confirmButton:hover:enabled {
+  background: #752f27;
+}
+
+@media (max-width: 640px) {
+  .actions {
+    flex-direction: column;
+  }
+
+  .editButton,
+  .deleteButton {
+    width: 100%;
+  }
+}

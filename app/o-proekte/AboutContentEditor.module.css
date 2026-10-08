@@ -1,0 +1,103 @@
+.wrapper {
+  display: grid;
+  gap: 16px;
+}
+
+.bodyLabel {
+  font-size: 12px;
+  color: #55514a;
+}
+
+.form {
+  display: grid;
+  gap: 8px;
+}
+
+.editButton {
+  justify-self: start;
+  padding: 8px 12px;
+  border: 1px solid #c9c7c0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.editButton:hover:enabled {
+  background: #f3efe6;
+}
+
+/* Shared admin row: the edit trigger plus any page-specific sibling action. */
+.adminActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.primaryButton,
+.cancelButton {
+  padding: 10px 12px;
+  border-radius: 3px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.primaryButton {
+  border: 1px solid #6e6557;
+  background: #6e6557;
+  color: #fff;
+}
+
+.primaryButton:hover:enabled {
+  background: #4f473b;
+}
+
+.cancelButton {
+  border: 1px solid #c9c7c0;
+  background: transparent;
+  color: inherit;
+}
+
+.cancelButton:hover:enabled {
+  background: #f3efe6;
+}
+
+.primaryButton:disabled,
+.cancelButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.error {
+  margin: 0;
+  color: #8d3c32;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.status {
+  margin: 0;
+  color: #5c6b47;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .actions {
+    flex-direction: column;
+  }
+
+  .primaryButton,
+  .cancelButton {
+    width: 100%;
+  }
+}

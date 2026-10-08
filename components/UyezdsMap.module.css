@@ -1,0 +1,286 @@
+/* Province-page map: floating district list over the map, same overlay
+   language as the homepage map (GuberniasMap.module.css). */
+.shell {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: clamp(340px, 52vh, 520px);
+  min-height: 320px;
+  background: var(--paper, #f7f6f2);
+  color: var(--ink, #272622);
+}
+
+.viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Two classes so the MapLibre base stylesheet cannot re-position the canvas host. */
+.shell .map {
+  position: absolute;
+  inset: 0;
+  background: #f7f6f2;
+}
+
+.shell :global(.maplibregl-canvas:focus) {
+  outline: none;
+}
+
+.shell :global(.maplibregl-canvas:focus-visible) {
+  outline: 2px solid #6e6557;
+  outline-offset: -3px;
+}
+
+.shell :global(.maplibregl-ctrl-group) {
+  overflow: hidden;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: none;
+}
+
+.shell :global(.maplibregl-ctrl-group button) {
+  width: 32px;
+  height: 32px;
+}
+
+.shell :global(.maplibregl-ctrl-group button + button) {
+  border-top: 1px solid #ece7db;
+}
+
+.shell :global(.maplibregl-ctrl-group button:hover) {
+  background: #f3efe6;
+}
+
+/* Floating overlay: the map keeps the full viewport behind the list. */
+.panel {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  width: min(248px, calc(100% - 28px));
+  max-height: min(calc(100% - 56px), 520px);
+  padding: 10px 10px 8px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+}
+
+.panelHeading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 7px 4px;
+}
+
+.panelHeading h2 {
+  min-width: 0;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  line-height: 1.3;
+  text-transform: uppercase;
+  color: var(--muted, #75736c);
+}
+
+/* Restores the province-wide extent and clears the selection. */
+.provinceButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 3px;
+  background: #ffffff;
+  color: inherit;
+  cursor: pointer;
+}
+
+.provinceButton svg {
+  display: block;
+}
+
+.provinceButton:hover:enabled {
+  background: #f3efe6;
+}
+
+.provinceButton:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: 2px;
+}
+
+.provinceButton:disabled {
+  color: #9b9890;
+  cursor: default;
+}
+
+.provinceButton[aria-pressed='true'] {
+  border-color: #a08a51;
+  background: #f6efdd;
+  color: #6f5a2b;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+/* Mouse hover and keyboard focus resolve to one shared hover state. */
+.districtButton {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.3;
+  color: var(--ink, #272622);
+  text-align: left;
+  cursor: pointer;
+}
+
+.districtButton:hover,
+.districtButtonHovered {
+  background: #f6efdd;
+  color: #6f5a2b;
+}
+
+.districtButton:focus-visible {
+  outline: 2px solid #6e6557;
+  outline-offset: -2px;
+}
+
+.districtButton:disabled {
+  color: #9b9890;
+  cursor: default;
+}
+
+.districtButtonSelected {
+  border-color: #a08a51;
+  background: #efe4c9;
+  color: #6f5a2b;
+}
+
+.statePanel,
+.errorPanel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 4;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  max-width: min(420px, calc(100% - 32px));
+  padding: 12px 16px;
+  border: 1px solid var(--line, #dad7cf);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: none;
+  font-size: 14px;
+  color: var(--ink, #272622);
+  transform: translate(-50%, -50%);
+}
+
+.errorPanel {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  border-color: #e2b9a8;
+  background: #fdf4f0;
+  text-align: left;
+}
+
+.errorPanel strong {
+  font-size: 15px;
+}
+
+.errorPanel span {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #7c5347;
+}
+
+.loader {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ded7c8;
+  border-top-color: #8d8577;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 600px) {
+  .shell {
+    height: clamp(420px, 64vh, 540px);
+    min-height: 420px;
+  }
+
+  /* Full-width strip with its own scroll: the map stays mostly visible. */
+  .panel {
+    top: 10px;
+    right: 10px;
+    left: 10px;
+    width: auto;
+    max-height: min(132px, 34%);
+    padding: 8px 8px 7px;
+  }
+
+  .panelHeading {
+    padding: 0 1px 6px 3px;
+  }
+
+  .districtButton {
+    padding: 5px 7px;
+    font-size: 12.5px;
+  }
+
+  .statePanel,
+  .errorPanel {
+    font-size: 13px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loader {
+    animation: none;
+  }
+}

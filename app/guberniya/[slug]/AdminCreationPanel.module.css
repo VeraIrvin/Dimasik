@@ -1,0 +1,36 @@
+.panel {
+  margin-top: 28px;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.creationButton {
+  padding: 8px 12px;
+  border: 1px solid #6e6557;
+  border-radius: 3px;
+  background: transparent;
+  color: #4f473b;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.creationButton:hover {
+  background: #f3efe6;
+}
+
+.creationButton[aria-expanded="true"] {
+  background: #6e6557;
+  border-color: #6e6557;
+  color: #fff;
+}
+
+.editor {
+  margin-top: 2px;
+}

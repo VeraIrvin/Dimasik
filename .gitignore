@@ -1,0 +1,40 @@
+node_modules/
+.next/
+out/
+public/maplibre/
+*.tsbuildinfo
+
+# Local and deployment secrets. Commit only the value-free template.
+.env
+.env.*
+!.env.example
+
+# Private keys and cloud credentials.
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+.ssh/
+credentials*.json
+service-account*.json
+
+# Mutable application data and local backups.
+data/gubernia-publications.json
+data/about-content.json
+data/site-settings.json
+data/settlement-references.json
+uploads/
+public/uploads/
+backups/
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+
+.DS_Store
+*.log
