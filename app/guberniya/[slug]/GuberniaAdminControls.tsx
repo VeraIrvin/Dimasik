@@ -1,19 +1,30 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useRouter } from "next/navigation";
+import RichTextField, {
+  usePostDocumentEditor,
+  type RichTextFieldHandle,
+} from "@/components/RichTextField";
+import type { PostDocument } from "@/lib/post-content";
 import styles from "./GuberniaAdminControls.module.css";
+
+const KEYBOARD_HINT = "Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца.";
 
 type Props = {
   id: string;
   slug: string;
-  description: string;
+  description: PostDocument | null;
 };
 
 type UpdateResponse = {
-  id?: unknown;
   slug?: unknown;
-  description?: unknown;
 };
 
 async function errorMessage(response: Response, fallback: string) {
@@ -29,39 +40,21 @@ async function errorMessage(response: Response, fallback: string) {
 export default function GuberniaAdminControls({ id, slug, description }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
-  const [slugValue, setSlugValue] = useState(slug);
-  const [descriptionValue, setDescriptionValue] = useState(description);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState("");
   const [saved, setSaved] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const editTriggerRef = useRef<HTMLButtonElement>(null);
-  const slugRef = useRef<HTMLInputElement>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  // Opening the form moves focus into the first field; closing it returns focus
-  // to the trigger, so the keyboard path stays on the controls either way.
-  useEffect(() => {
-    if (editing) slugRef.current?.focus();
-  }, [editing]);
-
   function openEdit() {
-    setSlugValue(slug);
-    setDescriptionValue(description);
-    setSaveError("");
     setSaved(false);
     setEditing(true);
   }
 
   function cancelEdit() {
-    if (saving) return;
-    setSlugValue(slug);
-    setDescriptionValue(description);
-    setSaveError("");
     setSaved(false);
     setEditing(false);
     requestAnimationFrame(() => editTriggerRef.current?.focus());
@@ -102,54 +95,16 @@ export default function GuberniaAdminControls({ id, slug, description }: Props) 
     return () => document.removeEventListener("keydown", handleDialogKeyDown);
   }, [confirmOpen, deleting]);
 
-  async function handleSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (saving || deleting) return;
-    const nextSlug = slugValue.trim();
-    if (!nextSlug) {
-      setSaved(false);
-      setSaveError("Адрес страницы не может быть пустым.");
+  /** A stored slug change moves the published page to its new address. */
+  function handleSaved(nextSlug: string) {
+    if (nextSlug !== slug) {
+      router.push(`/guberniya/${encodeURIComponent(nextSlug)}`);
       return;
     }
-
-    setSaving(true);
-    setSaved(false);
-    setSaveError("");
-    try {
-      const response = await fetch(`/api/gubernias/${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ slug: nextSlug, description: descriptionValue }),
-      });
-      if (!response.ok) {
-        setSaveError(await errorMessage(response, "Не удалось сохранить изменения. Попробуйте ещё раз."));
-        return;
-      }
-
-      let data: UpdateResponse = {};
-      try {
-        data = (await response.json()) as UpdateResponse;
-      } catch {
-        /* Keep the locally entered values if the body is unreadable. */
-      }
-      const savedSlug = typeof data.slug === "string" && data.slug ? data.slug : nextSlug;
-      if (typeof data.description === "string") setDescriptionValue(data.description);
-      setSlugValue(savedSlug);
-
-      if (savedSlug !== slug) {
-        router.push(`/guberniya/${encodeURIComponent(savedSlug)}`);
-      } else {
-        setEditing(false);
-        setSaved(true);
-        router.refresh();
-        requestAnimationFrame(() => editTriggerRef.current?.focus());
-      }
-    } catch {
-      setSaveError("Не удалось связаться с сервером.");
-    } finally {
-      setSaving(false);
-    }
+    setEditing(false);
+    setSaved(true);
+    router.refresh();
+    requestAnimationFrame(() => editTriggerRef.current?.focus());
   }
 
   async function handleDelete() {
@@ -175,63 +130,15 @@ export default function GuberniaAdminControls({ id, slug, description }: Props) 
   }
 
   return (
-    <section className={styles.panel} aria-labelledby="gubernia-admin-title">
-      <h2 id="gubernia-admin-title" className={styles.heading}>
-        Управление губернией
-      </h2>
-
+    <section className={styles.panel} aria-label="Управление губернией">
       {editing ? (
-        <form
-          className={styles.form}
-          onSubmit={handleSave}
-          onKeyDown={(event) => {
-            if (event.key === "Escape" && !saving) {
-              event.preventDefault();
-              cancelEdit();
-            }
-          }}
-        >
-          <label htmlFor="gubernia-slug">Адрес страницы</label>
-          <input
-            ref={slugRef}
-            id="gubernia-slug"
-            name="slug"
-            value={slugValue}
-            onChange={(event) => {
-              setSlugValue(event.target.value);
-              setSaved(false);
-            }}
-            placeholder="tulskaya"
-            autoComplete="off"
-            autoCapitalize="none"
-            spellCheck={false}
-            required
-          />
-          <label htmlFor="gubernia-description">Описание</label>
-          <textarea
-            id="gubernia-description"
-            name="description"
-            rows={6}
-            value={descriptionValue}
-            onChange={(event) => {
-              setDescriptionValue(event.target.value);
-              setSaved(false);
-            }}
-          />
-          {saveError ? (
-            <p className={styles.error} role="alert">
-              {saveError}
-            </p>
-          ) : null}
-          <div className={styles.actions}>
-            <button className={styles.primaryButton} type="submit" disabled={saving}>
-              {saving ? "Сохраняем…" : "Сохранить"}
-            </button>
-            <button className={styles.cancelButton} type="button" onClick={cancelEdit} disabled={saving}>
-              Отмена
-            </button>
-          </div>
-        </form>
+        <GuberniaEditForm
+          id={id}
+          initialSlug={slug}
+          initialDescription={description}
+          onSaved={handleSaved}
+          onCancel={cancelEdit}
+        />
       ) : (
         <>
           {saved ? (
@@ -239,8 +146,8 @@ export default function GuberniaAdminControls({ id, slug, description }: Props) 
               Сохранено.
             </p>
           ) : null}
-          <div className={styles.actions}>
-            <button ref={editTriggerRef} className={styles.primaryButton} type="button" onClick={openEdit}>
+          <div className={styles.adminActions}>
+            <button ref={editTriggerRef} className={styles.editButton} type="button" onClick={openEdit}>
               Редактировать губернию
             </button>
             <button
@@ -300,5 +207,134 @@ export default function GuberniaAdminControls({ id, slug, description }: Props) 
         </div>
       ) : null}
     </section>
+  );
+}
+
+type GuberniaEditFormProps = {
+  id: string;
+  initialSlug: string;
+  initialDescription: PostDocument | null;
+  onSaved: (slug: string) => void;
+  onCancel: () => void;
+};
+
+/**
+ * Mounted only while the admin edits the province: mounting seeds the slug
+ * field and the rich-text editor, so cancelling discards both and the next
+ * open starts from the stored values. A blank editor stores no description.
+ */
+function GuberniaEditForm({
+  id,
+  initialSlug,
+  initialDescription,
+  onSaved,
+  onCancel,
+}: GuberniaEditFormProps) {
+  const editor = usePostDocumentEditor(initialDescription ?? "", "Описание");
+  const richTextFieldRef = useRef<RichTextFieldHandle>(null);
+  const slugRef = useRef<HTMLInputElement>(null);
+  const [slugValue, setSlugValue] = useState(initialSlug);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  // The address stays the first field of the form, so opening it focuses there.
+  useEffect(() => {
+    slugRef.current?.focus();
+  }, []);
+
+  async function save() {
+    if (!editor || saving) return;
+    const nextSlug = slugValue.trim();
+    if (!nextSlug) {
+      setSaveError("Адрес страницы не может быть пустым.");
+      return;
+    }
+    // A blank editor means «no description»; the server also folds an
+    // invisible document to null, so the field carries a document or null.
+    const nextDescription = editor.getText().trim() ? editor.getJSON() : null;
+
+    setSaving(true);
+    setSaveError("");
+    try {
+      const response = await fetch(`/api/gubernias/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ slug: nextSlug, description: nextDescription }),
+      });
+      if (!response.ok) {
+        setSaveError(await errorMessage(response, "Не удалось сохранить изменения. Попробуйте ещё раз."));
+        return;
+      }
+
+      let data: UpdateResponse = {};
+      try {
+        data = (await response.json()) as UpdateResponse;
+      } catch {
+        /* Keep the locally entered address if the body is unreadable. */
+      }
+      onSaved(typeof data.slug === "string" && data.slug ? data.slug : nextSlug);
+    } catch {
+      setSaveError("Не удалось связаться с сервером.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void save();
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLFormElement>) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void save();
+      return;
+    }
+    if (event.key !== "Escape" || saving) return;
+    if (richTextFieldRef.current?.isLinkFieldOpen()) {
+      event.preventDefault();
+      richTextFieldRef.current.closeLinkField();
+      return;
+    }
+    const target = event.target;
+    // Inside the body Escape belongs to the editor, not to the whole form.
+    if (editor && target instanceof Node && editor.view.dom.contains(target)) return;
+    event.preventDefault();
+    onCancel();
+  }
+
+  return (
+    <form className={styles.form} onSubmit={handleSubmit} onKeyDown={handleKeyDown}>
+      <label htmlFor="gubernia-slug">Адрес страницы</label>
+      <input
+        ref={slugRef}
+        id="gubernia-slug"
+        name="slug"
+        value={slugValue}
+        onChange={(event) => setSlugValue(event.target.value)}
+        placeholder="tulskaya"
+        autoComplete="off"
+        autoCapitalize="none"
+        spellCheck={false}
+        required
+      />
+      <span className={styles.descriptionLabel}>Описание</span>
+      <RichTextField ref={richTextFieldRef} editor={editor} hint={KEYBOARD_HINT} />
+      {saveError ? (
+        <p className={styles.error} role="alert">
+          {saveError}
+        </p>
+      ) : null}
+      <div className={styles.actions}>
+        <button className={styles.primaryButton} type="submit" disabled={saving || !editor}>
+          {saving ? "Сохраняем…" : "Сохранить"}
+        </button>
+        <button className={styles.cancelButton} type="button" onClick={onCancel} disabled={saving}>
+          Отмена
+        </button>
+      </div>
+    </form>
   );
 }

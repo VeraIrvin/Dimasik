@@ -1,46 +1,24 @@
+/* Top margin matches the province page so the back link, title, and admin row
+   start at the same page origin. */
 .page {
   width: min(1160px, calc(100% - 64px));
-  margin: clamp(64px, 12vh, 150px) auto 80px;
+  margin: clamp(48px, 9vh, 100px) auto 80px;
+}
+
+.header {
+  margin-bottom: 20px;
 }
 
 .back {
   margin-top: 0;
 }
 
-/* Same compact top-edge panel as the province page, back link only. */
-.floatingNavigation {
-  position: fixed;
-  z-index: 10;
-  top: 0;
-  left: max(18px, calc((100vw - 1160px) / 2));
-  width: max-content;
-  max-width: calc(100% - 36px);
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  background: var(--paper);
-}
-
-.floatingBack {
-  display: inline-flex;
-  min-height: 44px;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  background: var(--paper);
-  color: var(--ink);
-  font-size: 14px;
-  text-decoration: none;
-}
-
-.floatingBack:hover,
-.floatingBack:focus-visible {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
 .eyebrow {
   margin-top: 28px;
+}
+
+.title {
+  max-width: 800px;
 }
 
 .details {
@@ -82,9 +60,19 @@
   color: #756958;
 }
 
+/* Admin row slot: the portaled «Редактировать/Удалить населённый пункт» row
+   above the details, kept at the page origin like the eyebrow and title so the
+   actions align with the page's left edge. */
+.adminSlot {
+  max-width: 800px;
+}
+
+/* Reference anchor target of the floating ↑ button; the offsets keep the
+   heading clear of the pinned toolbar, matching the province map anchor. */
 .section {
   max-width: 800px;
   margin-top: 56px;
+  scroll-margin-top: 100px;
 }
 
 .sectionHeading {
@@ -103,101 +91,32 @@
   margin-top: 56px;
 }
 
+/* In-flow filter form of the explorer, directly above the feed; same rules as
+   the province page, which also leaves it full width. */
+.filters {
+  margin-bottom: 36px;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
 .feedSection {
   margin-top: 56px;
 }
 
-/* Persistent feed rail: back link, year filter and reset above «Содержание». */
-.railBack {
-  display: flex;
-  flex: 0 0 auto;
-  min-height: 44px;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--paper);
-  color: var(--ink);
-  font-size: 14px;
-  white-space: nowrap;
-  text-decoration: none;
+/* Composer aligns with the feed's article column; the reference and details
+   stay at the page origin under the settlement title. */
+.withPosts .composer {
+  margin-left: 266px;
 }
 
-.railBack:hover,
-.railBack:focus-visible {
-  color: var(--accent);
-  border-color: var(--accent);
-}
+@media (max-width: 900px) {
+  .withPosts .composer {
+    margin-left: 216px;
+  }
 
-.railBack:focus-visible {
-  outline: 2px solid #6e6557;
-  outline-offset: 2px;
-}
-
-/* Back link and year filter share one row while scrolling; the reset sits below. */
-.railFilter {
-  display: grid;
-  gap: 8px;
-}
-
-.railPrimary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.railFilter select {
-  flex: 1 1 80px;
-  min-width: 0;
-  min-height: 44px;
-  padding: 7px 30px 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  appearance: none;
-  background-color: #fff;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23555048' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-position: right 10px center;
-  background-repeat: no-repeat;
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-  box-shadow: none;
-}
-
-.railFilter select:focus {
-  border-color: #6e6557;
-  outline: none;
-}
-
-.railFilter select:focus-visible {
-  box-shadow: inset 0 0 0 1px #6e6557;
-}
-
-.railReset:focus-visible {
-  outline: 2px solid #6e6557;
-  outline-offset: 2px;
-}
-
-.railReset {
-  min-height: 38px;
-  padding: 7px 12px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.railReset:hover:enabled {
-  background: #f3efe6;
-}
-
-.railReset:disabled {
-  color: var(--muted);
-  cursor: default;
+  .section {
+    scroll-margin-top: 160px;
+  }
 }
 
 @media (max-width: 700px) {
@@ -206,29 +125,16 @@
     margin: 38px auto 72px;
   }
 
-  .floatingNavigation {
-    left: 18px;
-    padding: 8px 10px;
+  .withPosts .composer {
+    margin-left: 0;
   }
 
-  /* Keep the pinned controls short: the rail caps and scrolls its title list. */
-  .railBack {
-    min-height: 40px;
-    padding: 8px 12px;
-    font-size: 13px;
+  .section {
+    scroll-margin-top: 220px;
   }
 
-  /* Same height with and without the back link, so the sticky offset below holds. */
-  .railPrimary {
-    min-height: 40px;
-  }
-
-  .railFilter select {
-    min-height: 40px;
-  }
-
-  .railReset {
-    min-height: 36px;
+  .header {
+    margin-bottom: 32px;
   }
 }
 

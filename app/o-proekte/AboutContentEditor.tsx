@@ -11,6 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import PostBody from "@/app/guberniya/[slug]/PostBody";
+import RichDocumentPreview from "@/components/RichDocumentPreview";
 import RichTextField, {
   usePostDocumentEditor,
   type RichTextFieldHandle,
@@ -37,6 +38,15 @@ type RichPageContentEditorProps = {
   editLabel?: string;
   secondaryAction?: ReactNode;
   /**
+   * Opens a long document as a truncated rich-text prefix (~560 characters)
+   * with a «Читать далее» toggle instead of the full body. The prefix renders
+   * through the same `PostBody`, keeping headings, lists, marks and links, and
+   * the omitted remainder is never mounted. Documents whose text is no longer
+   * than the excerpt render unchanged, and pages that always show the whole
+   * body leave this off.
+   */
+  collapsedPreview?: boolean;
+  /**
    * Element id that receives the admin row instead of the block itself, so a
    * record page can keep the row under its title while the editor stays in
    * place. Until the page's markup is ready the row is withheld, and a missing
@@ -61,11 +71,13 @@ export function RichPageContentEditor({
   editLabel = "Редактировать",
   secondaryAction,
   adminActionsTargetId,
+  collapsedPreview = false,
 }: RichPageContentEditorProps) {
   const router = useRouter();
   const [body, setBody] = useState<PostDocument | null>(initialBody);
   const [editing, setEditing] = useState(false);
   const [status, setStatus] = useState("");
+  const [previewExpanded, setPreviewExpanded] = useState(false);
   const [returnFocus, setReturnFocus] = useState(false);
   const [adminRowTarget, setAdminRowTarget] = useState<HTMLElement | null | undefined>(undefined);
   const editButtonRef = useRef<HTMLButtonElement>(null);
@@ -95,6 +107,7 @@ export function RichPageContentEditor({
 
   function handleSaved(nextBody: PostDocument) {
     setBody(nextBody);
+    setPreviewExpanded(false);
     setStatus("Изменения сохранены.");
     finishEditing();
     router.refresh();
@@ -120,6 +133,19 @@ export function RichPageContentEditor({
     return adminRowTarget ? createPortal(adminActions, adminRowTarget) : null;
   }
 
+  /** Read mode: long references open as a rich prefix, everything else as full text. */
+  function renderReadContent() {
+    if (!body) return emptyState;
+    if (!collapsedPreview) return <PostBody body={body} />;
+    return (
+      <RichDocumentPreview
+        body={body}
+        expanded={previewExpanded}
+        onExpandedChange={setPreviewExpanded}
+      />
+    );
+  }
+
   return (
     <section className={styles.wrapper} aria-label={ariaLabel}>
       {editing ? (
@@ -135,10 +161,8 @@ export function RichPageContentEditor({
             finishEditing();
           }}
         />
-      ) : body ? (
-        <PostBody body={body} />
       ) : (
-        emptyState
+        renderReadContent()
       )}
 
       {!editing && status ? (

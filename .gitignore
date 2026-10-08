@@ -5,10 +5,11 @@ rust-backend/target/
 public/maplibre/
 *.tsbuildinfo
 
-# Local and deployment secrets. Commit only the value-free template.
+# Local and deployment secrets. Commit only the value-free templates.
 .env
 .env.*
 !.env.example
+!.env.compose.example
 
 # Private keys and cloud credentials.
 *.pem

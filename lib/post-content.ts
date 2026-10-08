@@ -352,3 +352,98 @@ export function normalizePostDocument(value: unknown): PostDocument {
   if (!context.hasVisibleContent) throw new PostContentValidationError(EMPTY_DOCUMENT_MESSAGE);
   return { type: "doc", content: normalized };
 }
+
+export const POST_DOCUMENT_PREVIEW_MAX_CHARACTERS = 560;
+const POST_DOCUMENT_PREVIEW_MIN_WORD_BOUNDARY = 500;
+const WHITESPACE_CHARACTER = /\s/u;
+
+function findPreviewCut(
+  nodes: PostNode[],
+  maxCharacters: number,
+  minWordBoundary: number,
+): number | null {
+  let position = 0;
+  let lastWordBoundary = -1;
+  let hasHiddenText = false;
+
+  function visit(children: PostNode[]): boolean {
+    for (const node of children) {
+      if (node.type === "text" && node.text) {
+        for (const character of node.text) {
+          if (position >= maxCharacters) {
+            hasHiddenText = true;
+            return false;
+          }
+          if (WHITESPACE_CHARACTER.test(character) && position >= minWordBoundary) {
+            lastWordBoundary = position;
+          }
+          position += 1;
+        }
+      }
+      if (node.content && !visit(node.content)) return false;
+    }
+    return true;
+  }
+
+  visit(nodes);
+  if (!hasHiddenText) return null;
+  return lastWordBoundary > 0 ? lastWordBoundary : maxCharacters;
+}
+
+/** Slices at most `limit` whole Unicode code points, never splitting a surrogate pair. */
+function sliceCodePoints(text: string, limit: number): { text: string; count: number } {
+  let offset = 0;
+  let count = 0;
+  for (const character of text) {
+    if (count >= limit) break;
+    offset += character.length;
+    count += 1;
+  }
+  return { text: text.slice(0, offset), count };
+}
+
+function cloneDocumentPrefix(nodes: PostNode[], state: { remaining: number }): PostNode[] {
+  const prefix: PostNode[] = [];
+
+  for (const node of nodes) {
+    if (state.remaining === 0) break;
+
+    if (node.type === "text" && node.text) {
+      const sliced = sliceCodePoints(node.text, state.remaining);
+      state.remaining -= sliced.count;
+      prefix.push({
+        ...node,
+        text: `${sliced.text}${state.remaining === 0 ? "…" : ""}`,
+      });
+      continue;
+    }
+
+    if (node.content) {
+      prefix.push({ ...node, content: cloneDocumentPrefix(node.content, state) });
+      continue;
+    }
+
+    prefix.push({ ...node });
+  }
+
+  return prefix;
+}
+
+/**
+ * Returns the original document when it fits, otherwise an immutable rich-text
+ * tree prefix. The retained nodes keep their structure, attributes and marks;
+ * omitted siblings never need to be rendered and non-BMP characters are never
+ * split because the limit is measured in Unicode code points.
+ */
+export function truncatePostDocument(
+  document: PostDocument,
+  maxCharacters = POST_DOCUMENT_PREVIEW_MAX_CHARACTERS,
+  minWordBoundary = POST_DOCUMENT_PREVIEW_MIN_WORD_BOUNDARY,
+): PostDocument {
+  const cut = findPreviewCut(document.content, maxCharacters, minWordBoundary);
+  if (cut === null) return document;
+  return {
+    type: "doc",
+    content: cloneDocumentPrefix(document.content, { remaining: cut }),
+  };
+}

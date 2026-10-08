@@ -1,15 +1,59 @@
 use std::fs;
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
+use crate::content::legacy_description_json;
 use crate::geo::CanonicalProvinces;
 use crate::util::iso_now;
 
-const MIGRATIONS: &[(i64, &str)] = &[
-    (1, include_str!("../migrations/0001_init.sql")),
-    (2, include_str!("../migrations/0002_districts.sql")),
+/// One migration step: SQL applied verbatim, or a data conversion that needs
+/// Rust (`json` escaping of arbitrary legacy plain text cannot be expressed
+/// safely in SQLite DDL).
+enum Migration {
+    Sql(&'static str),
+    Convert(fn(&Transaction<'_>) -> Result<(), String>),
+}
+
+const MIGRATIONS: &[(i64, Migration)] = &[
+    (1, Migration::Sql(include_str!("../migrations/0001_init.sql"))),
+    (2, Migration::Sql(include_str!("../migrations/0002_districts.sql"))),
+    (3, Migration::Convert(migrate_province_descriptions)),
 ];
+
+/// Version 3: `provinces.description` holds a canonical rich document, so the
+/// column becomes `description_json` (`''` keeps the "no description"
+/// sentinel the publication CHECK ties to the unpublished state). Renaming the
+/// column rewrites the CHECK in place; the legacy plain text is converted row
+/// by row inside the migration transaction.
+fn migrate_province_descriptions(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute_batch("ALTER TABLE provinces RENAME COLUMN description TO description_json;")
+        .map_err(|error| format!("Cannot rename the province description column: {error}"))?;
+
+    let rows: Vec<(String, String)> = {
+        let mut statement = transaction
+            .prepare("SELECT id, description_json FROM provinces WHERE description_json <> ''")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| error.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?
+    };
+    for (id, description) in rows {
+        let stored = legacy_description_json(&description)
+            .map_err(|error| format!("Cannot convert the description of {id}: {error}"))?
+            .unwrap_or_default();
+        transaction
+            .execute(
+                "UPDATE provinces SET description_json = ?1 WHERE id = ?2",
+                params![stored, id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
 
 /// Opens (creating parent directories) with WAL, enforced foreign keys and a
 /// busy timeout, so the single-connection service behaves like the previous
@@ -73,7 +117,7 @@ pub fn migrate(connection: &mut Connection) -> Result<(), String> {
         )
         .map_err(|error| format!("Cannot create migration table: {error}"))?;
 
-    for (version, sql) in MIGRATIONS {
+    for (version, migration) in MIGRATIONS {
         // The version is re-read under the write lock: two processes
         // cold-starting together must not both apply the same migration.
         let transaction = connection
@@ -90,9 +134,13 @@ pub fn migrate(connection: &mut Connection) -> Result<(), String> {
             drop(transaction);
             continue;
         }
-        transaction
-            .execute_batch(sql)
-            .map_err(|error| format!("Migration {version} failed: {error}"))?;
+        match migration {
+            Migration::Sql(sql) => transaction
+                .execute_batch(sql)
+                .map_err(|error| format!("Migration {version} failed: {error}"))?,
+            Migration::Convert(convert) => convert(&transaction)
+                .map_err(|error| format!("Migration {version} failed: {error}"))?,
+        }
         transaction
             .execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",

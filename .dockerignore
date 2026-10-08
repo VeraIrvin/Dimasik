@@ -1,0 +1,86 @@
+# Keep the build context minimal and never bake secrets or local state.
+# Everything listed here is either rebuilt inside the image or must not leave
+# the developer machine.
+
+# Version control and local metadata
+.git
+.gitignore
+.github
+.DS_Store
+
+# Dependencies and build outputs (reinstalled/rebuilt inside the images)
+node_modules
+.next
+out
+rust-backend/target
+public/maplibre
+*.tsbuildinfo
+
+# Secrets and local environment files; images receive configuration through
+# compose environment variables instead.
+.env
+.env.*
+.env.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+.ssh
+credentials*.json
+service-account*.json
+
+# Local SQLite databases and their WAL sidecars: the image must never contain
+# live data. The backend state lives in the `dimasik-data` named volume.
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.dump
+
+# Local backups and uploads
+backups
+uploads
+public/uploads
+
+# Tests and docs not needed inside the runtime images
+tests
+rust-backend/tests
+AGENTS.md
+
+# Logs
+*.log
+
+# Nested copies of the safety-critical patterns above. Patterns without a slash
+# are intended to match at any depth, but spell the nested cases out explicitly
+# so live databases, WAL sidecars and key material can never be baked into an
+# image regardless of matcher nuances.
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/*.sqlite-wal
+**/*.sqlite-shm
+**/*.sqlite3-wal
+**/*.sqlite3-shm
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.ppk
+**/*.jks
+**/*.keystore
+**/credentials*.json
+**/service-account*.json
+**/.env
+**/.env.*
+**/node_modules
+**/backups
+**/tests
+**/uploads

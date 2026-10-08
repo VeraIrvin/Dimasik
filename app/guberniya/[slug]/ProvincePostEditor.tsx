@@ -298,6 +298,51 @@ export default function ProvincePostEditor({
     cancel();
   }
 
+  const provinceField = (
+    <div className={styles.metaField}>
+      <label htmlFor={provinceId}>Губерния</label>
+      <select
+        ref={provinceRef}
+        id={provinceId}
+        name="guberniaId"
+        className={styles.metaSelect}
+        value={selectedProvinceId}
+        onChange={(event) => handleProvinceChange(event.target.value)}
+      >
+        <option value="">— Не выбрана —</option>
+        {provinces.map((province) => (
+          <option key={province.id} value={province.id}>
+            {province.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+  const settlementField = (
+    <div className={styles.metaField}>
+      <label htmlFor={settlementId}>Населённый пункт</label>
+      <select
+        id={settlementId}
+        name="settlementId"
+        className={styles.metaSelect}
+        value={selectedSettlementId}
+        onChange={(event) => handleSettlementChange(event.target.value)}
+      >
+        <option value="">— Не указан —</option>
+        {filteredSettlements.map((settlement) => (
+          <option key={settlement.id} value={settlement.id}>
+            {settlement.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+  const primaryAction = (
+    <button className={styles.primaryButton} type="submit" disabled={saving || !editor}>
+      {saving ? (isEditing ? "Сохраняем…" : "Отправляем…") : isEditing ? "Сохранить" : "Отправить"}
+    </button>
+  );
+
   return (
     <section className={styles.panel} aria-labelledby={headingId}>
       <h2 id={headingId} className={styles.heading}>
@@ -328,24 +373,7 @@ export default function ProvincePostEditor({
             </select>
           </div>
 
-          <div className={styles.metaField}>
-            <label htmlFor={provinceId}>Губерния</label>
-            <select
-              ref={provinceRef}
-              id={provinceId}
-              name="guberniaId"
-              className={styles.metaSelect}
-              value={selectedProvinceId}
-              onChange={(event) => handleProvinceChange(event.target.value)}
-            >
-              <option value="">— Не выбрана —</option>
-              {provinces.map((province) => (
-                <option key={province.id} value={province.id}>
-                  {province.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {isEditing ? provinceField : settlementField}
 
           <div className={styles.metaField}>
             <label htmlFor={districtId}>Уезд</label>
@@ -381,23 +409,7 @@ export default function ProvincePostEditor({
 
           </div>
 
-          <div className={styles.metaField}>
-            <label htmlFor={settlementId}>Населённый пункт</label>
-            <select
-              id={settlementId}
-              name="settlementId"
-              className={styles.metaSelect}
-              value={selectedSettlementId}
-              onChange={(event) => handleSettlementChange(event.target.value)}
-            >
-              <option value="">— Не указан —</option>
-              {filteredSettlements.map((settlement) => (
-                <option key={settlement.id} value={settlement.id}>
-                  {settlement.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {isEditing ? settlementField : provinceField}
 
           <div className={styles.metaField}>
             <label htmlFor={yearId}>Год</label>
@@ -458,9 +470,7 @@ export default function ProvincePostEditor({
         ) : null}
 
         <div className={styles.actions}>
-          <button className={styles.primaryButton} type="submit" disabled={saving || !editor}>
-            {saving ? (isEditing ? "Сохраняем…" : "Отправляем…") : isEditing ? "Сохранить" : "Отправить"}
-          </button>
+          {primaryAction}
           <button className={styles.cancelButton} type="button" onClick={cancel} disabled={saving}>
             Отмена
           </button>
@@ -489,6 +499,10 @@ export default function ProvincePostEditor({
           editor={editor}
           hint="Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца."
         />
+
+        <div className={styles.actions}>
+          {primaryAction}
+        </div>
       </form>
     </section>
   );

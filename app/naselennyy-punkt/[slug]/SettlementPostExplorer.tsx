@@ -1,8 +1,9 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import PostFeed from "@/app/guberniya/[slug]/PostFeed";
+import ProvinceFilterControls from "@/app/guberniya/[slug]/ProvinceFilterControls";
+import ProvinceQuickNavigation from "@/app/guberniya/[slug]/ProvinceQuickNavigation";
 import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import styles from "./page.module.css";
 
@@ -20,11 +21,14 @@ type Props = {
 };
 
 /**
- * Settlement posts with a year-only filter. The year filter and its reset live
- * in PostFeed's persistent left navigator, and the selected year feeds a single
- * array into PostFeed, so the title navigator and the articles never diverge.
- * The rail only takes over the «Вернуться к карте» link once the page header is
- * scrolled away, which keeps exactly one back control visible at any position.
+ * Settlement posts with year and category filters, like the province feed: one
+ * filter state feeds the in-flow form, the fixed compact toolbar and a single
+ * already-filtered array into PostFeed, so the title navigator and the articles
+ * never diverge. The toolbar takes over the «Вернуться к карте» link once the
+ * page header scrolls away, keeping exactly one back control visible at any
+ * scroll position. The ↑ button watches the reference section's top edge: the
+ * reference can be much taller than the viewport, so waiting for its bottom
+ * would hide the button while the reference is still on screen.
  */
 export default function SettlementPostExplorer({
   posts,
@@ -37,26 +41,7 @@ export default function SettlementPostExplorer({
   backHref,
 }: Props) {
   const [year, setYear] = useState("");
-  const [headerScrolledAway, setHeaderScrolledAway] = useState(false);
-
-  useEffect(() => {
-    const update = () => {
-      const header = document.getElementById("settlement-page-header");
-      setHeaderScrolledAway(header ? header.getBoundingClientRect().bottom <= 0 : false);
-    };
-
-    update();
-    window.addEventListener("scroll", update, { passive: true });
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-    };
-  }, []);
-
-  useEffect(() => {
-    window.dispatchEvent(new Event("settlement-rail-controls-change"));
-  }, [headerScrolledAway]);
+  const [category, setCategory] = useState("");
 
   // Same ordering as the province filter; legacy posts without a year stay in «Все годы».
   const years = useMemo(
@@ -65,62 +50,90 @@ export default function SettlementPostExplorer({
     ),
     [posts],
   );
-  // A refresh after create/edit/delete can retire the selected year; fall back to all posts.
+  // Configured categories keep their settings order; categories kept only by
+  // older posts stay selectable so every stored post remains filterable.
+  const categoryOptions = useMemo(
+    () => [
+      ...categories,
+      ...Array.from(
+        new Set(
+          posts
+            .map((post) => post.category)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      )
+        .filter((option) => !categories.includes(option))
+        .sort((left, right) => left.localeCompare(right, "ru")),
+    ],
+    [categories, posts],
+  );
+  // A refresh after create/edit/delete can retire the selected values; fall back to all.
   const activeYear = years.includes(year) ? year : "";
+  const activeCategory = categoryOptions.includes(category) ? category : "";
   const visiblePosts = useMemo(
-    () => (activeYear ? posts.filter((post) => post.year === activeYear) : posts),
-    [posts, activeYear],
+    () =>
+      posts.filter(
+        (post) =>
+          (!activeYear || post.year === activeYear) &&
+          (!activeCategory || post.category === activeCategory),
+      ),
+    [posts, activeYear, activeCategory],
   );
+  const hasFilters = activeYear !== "" || activeCategory !== "";
 
-  const sidebarControls = (
-    <div id="settlement-rail-controls" className={styles.railFilter}>
-      <div className={styles.railPrimary}>
-        {headerScrolledAway ? (
-          <Link id="settlement-rail-back" className={styles.railBack} href={backHref}>
-            ← Вернуться к карте
-          </Link>
-        ) : null}
-        <select
-          id="settlement-post-year"
-          aria-label="Фильтр по году"
-          value={activeYear}
-          onChange={(event) => setYear(event.target.value)}
-        >
-          <option value="">Все годы</option>
-          {years.map((option) => (
-            <option key={option} value={option}>{option}</option>
-          ))}
-        </select>
-      </div>
-      <button
-        className={styles.railReset}
-        type="button"
-        onClick={() => setYear("")}
-        disabled={activeYear === ""}
-      >
-        Сбросить фильтр
-      </button>
-    </div>
-  );
+  function resetFilters() {
+    setYear("");
+    setCategory("");
+  }
+
+  const filterControlsProps = {
+    years,
+    categories: categoryOptions,
+    year: activeYear,
+    category: activeCategory,
+    hasFilters,
+    onYearChange: setYear,
+    onCategoryChange: setCategory,
+    onReset: resetFilters,
+  };
 
   return (
-    <PostFeed
-      posts={visiblePosts}
-      guberniaId={guberniaId}
-      provinces={provinces}
-      settlements={settlements}
-      categories={categories}
-      districtNames={districtNames}
-      isAdmin={isAdmin}
-      ariaLabel="Сообщения населённого пункта"
-      emptyMessage={
-        activeYear
-          ? "По выбранному году сообщений нет."
-          : "Сообщений об этом населённом пункте пока нет."
-      }
-      sidebarHeading="Содержание"
-      sidebarControls={sidebarControls}
-      keepSidebarWhenEmpty={posts.length > 0}
-    />
+    <>
+      <ProvinceQuickNavigation
+        filtersId="settlement-post-filters"
+        upTargetId="settlement-reference"
+        upVisibilityEdge="top"
+        backHref={backHref}
+        navigationLabel="Навигация по странице населённого пункта"
+        upLabel="К справочным сведениям"
+      >
+        <ProvinceFilterControls idPrefix="settlement-toolbar" compact {...filterControlsProps} />
+      </ProvinceQuickNavigation>
+
+      <section
+        className={styles.filters}
+        id="settlement-post-filters"
+        aria-label="Фильтры сообщений"
+      >
+        <ProvinceFilterControls idPrefix="settlement-post" {...filterControlsProps} />
+      </section>
+
+      <PostFeed
+        posts={visiblePosts}
+        guberniaId={guberniaId}
+        provinces={provinces}
+        settlements={settlements}
+        categories={categories}
+        districtNames={districtNames}
+        isAdmin={isAdmin}
+        ariaLabel="Сообщения населённого пункта"
+        emptyMessage={
+          posts.length > 0
+            ? "По выбранным фильтрам сообщений нет."
+            : "Сообщений об этом населённом пункте пока нет."
+        }
+        keepSidebarWhenEmpty={posts.length > 0}
+      />
+    </>
   );
 }

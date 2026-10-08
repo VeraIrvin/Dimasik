@@ -4,11 +4,6 @@
   gap: 48px;
 }
 
-/* Settlement rail: the horizontal back/filter row needs a wider first column. */
-.feedWithControls {
-  grid-template-columns: 300px minmax(0, 1fr);
-}
-
 .sidebar {
   position: sticky;
   top: 112px;
@@ -17,21 +12,6 @@
   overflow-y: auto;
   border-right: 1px solid var(--line);
   padding: 4px 22px 16px 0;
-}
-
-/* Settlement rail: pin the filter controls while the rest of the navigator scrolls. */
-.sidebarWithControls {
-  padding-top: 0;
-}
-
-.sidebarControls {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--paper);
 }
 
 .sidebarHeading {
@@ -134,10 +114,6 @@
     gap: 32px;
   }
 
-  .feedWithControls {
-    grid-template-columns: 268px minmax(0, 1fr);
-  }
-
   .sidebar {
     top: 160px;
     max-height: calc(100vh - 184px);
@@ -160,37 +136,6 @@
     border-right: 0;
     border-bottom: 1px solid var(--line);
     padding: 0 0 22px;
-  }
-
-  /* Settlement rail: pin only the controls; the capped, scrollable title list
-     stays in flow so the pinned bar never covers the document. */
-  .sidebarWithControls {
-    display: contents;
-  }
-
-  .sidebarWithControls .sidebarControls {
-    z-index: 6;
-    margin-bottom: 18px;
-    padding: 10px 0 12px;
-  }
-
-  .sidebarWithControls .sidebarHeading {
-    position: sticky;
-    /* Pinned controls height: 10px pad + 40px back/filter row + 8px gap
-       + 36px reset + 12px pad + 1px border. */
-    top: 107px;
-    z-index: 5;
-    margin: 0;
-    padding: 8px 0 12px;
-    background: var(--paper);
-  }
-
-  .sidebarWithControls .sidebarNav {
-    max-height: 200px;
-    overflow-y: auto;
-    margin-bottom: 36px;
-    padding-bottom: 22px;
-    border-bottom: 1px solid var(--line);
   }
 
   .post {

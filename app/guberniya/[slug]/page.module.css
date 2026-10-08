@@ -94,7 +94,7 @@
 }
 
 .composer,
-.description {
+.reference {
   max-width: 800px;
 }
 
@@ -120,6 +120,11 @@
   gap: 14px;
   align-items: end;
   min-width: 0;
+}
+
+/* Settlement feed: year and category only, so the geo select columns collapse. */
+.filterControlsNoGeo {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
 }
 
 .compactFilterControls {
@@ -200,13 +205,23 @@
   cursor: default;
 }
 
-.description {
+.reference {
   margin: 0 0 48px;
-  white-space: pre-line;
 }
 
-.withPosts .composer,
-.withPosts .description {
+/* Reference heading mirrors the settlement page block of the same name. */
+.referenceHeading {
+  margin: 0 0 20px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.withPosts .composer {
   margin-left: 266px;
 }
 
@@ -220,8 +235,7 @@
 }
 
 @media (max-width: 900px) {
-  .withPosts .composer,
-  .withPosts .description {
+  .withPosts .composer {
     margin-left: 216px;
   }
 
@@ -231,6 +245,11 @@
 
   .filterControls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The year/category form keeps both selects and the reset on one row. */
+  .filterControlsNoGeo {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
   }
 
   .compactFilterControls {
@@ -248,8 +267,7 @@
     margin: 38px auto 72px;
   }
 
-  .withPosts .composer,
-  .withPosts .description {
+  .withPosts .composer {
     margin-left: 0;
   }
 
@@ -282,6 +300,11 @@
   .filterControls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
+  }
+
+  /* Narrow selects stay side by side; the reset takes the full row. */
+  .filterControlsNoGeo .resetFilters {
+    grid-column: 1 / -1;
   }
 
   .resetFilters {

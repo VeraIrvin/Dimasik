@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PublishedGubernia, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import UyezdsMap from "@/components/UyezdsMap";
+import RichDocumentPreview from "@/components/RichDocumentPreview";
 import AdminCreationPanel from "./AdminCreationPanel";
 import PostFeed from "./PostFeed";
 import ProvinceFilterControls, { type DistrictOption } from "./ProvinceFilterControls";
@@ -33,6 +34,7 @@ export default function ProvinceExplorer({
   const [settlementId, setSettlementId] = useState<string | null>(null);
   const [year, setYear] = useState("");
   const [category, setCategory] = useState("");
+  const [referenceExpanded, setReferenceExpanded] = useState(false);
 
   const provinceSettlements = useMemo(
     () => settlements.filter((settlement) => settlement.guberniaId === gubernia.id),
@@ -163,13 +165,18 @@ export default function ProvinceExplorer({
         />
       </div>
 
-      <section
-        className={styles.filters}
-        id="province-post-filters"
-        aria-label="Фильтры сообщений"
-      >
-        <ProvinceFilterControls idPrefix="province-post" {...filterControlsProps} />
-      </section>
+      {gubernia.description ? (
+        <section className={styles.reference} aria-labelledby="province-reference-heading">
+          <h2 className={styles.referenceHeading} id="province-reference-heading">
+            Справочные сведения
+          </h2>
+          <RichDocumentPreview
+            body={gubernia.description}
+            expanded={referenceExpanded}
+            onExpandedChange={setReferenceExpanded}
+          />
+        </section>
+      ) : null}
 
       {isAdmin ? (
         <div className={styles.composer}>
@@ -183,9 +190,13 @@ export default function ProvinceExplorer({
         </div>
       ) : null}
 
-      {gubernia.description ? (
-        <p className={`content-page__text ${styles.description}`}>{gubernia.description}</p>
-      ) : null}
+      <section
+        className={styles.filters}
+        id="province-post-filters"
+        aria-label="Фильтры сообщений"
+      >
+        <ProvinceFilterControls idPrefix="province-post" {...filterControlsProps} />
+      </section>
 
       {gubernia.posts.length > 0 ? (
         <PostFeed

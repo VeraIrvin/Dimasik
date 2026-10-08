@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value};
 
-use crate::content::{normalize_post_document, ContentError};
+use crate::content::{normalize_optional_document, normalize_post_document, ContentError};
 use crate::error::{ApiError, ApiResult};
 use crate::geo::{CanonicalProvinces, GeoRuntime};
 use crate::util::{
@@ -11,7 +11,6 @@ use crate::util::{
     js_number, js_trim, parse_js_date_ms, random_id, ru_compare, utf16_len, SETTLEMENT_URL_PREFIX,
 };
 
-pub const MAX_DESCRIPTION_LENGTH: usize = 20_000;
 pub const MAX_TITLE_LENGTH: usize = 1_000;
 pub const MAX_ID_LENGTH: usize = 100;
 pub const MAX_SETTLEMENT_NAME_LENGTH: usize = 200;
@@ -55,15 +54,16 @@ pub fn validate_slug(value: &Value) -> ApiResult<String> {
     }
 }
 
-pub fn validate_description(value: &Value) -> ApiResult<String> {
-    match value.as_str() {
-        Some(description) if utf16_len(description) <= MAX_DESCRIPTION_LENGTH => {
-            Ok(description.to_string())
-        }
-        _ => Err(bad(format!(
-            "Описание должно быть строкой не длиннее {MAX_DESCRIPTION_LENGTH} символов."
-        ))),
-    }
+const INVALID_DESCRIPTION_MESSAGE: &str = "Некорректное содержимое описания.";
+
+/// Validates the province `description` payload: the field must be present and
+/// hold a rich document. `null` (or a blank document) clears it, while every
+/// other value must pass the post whitelist and resource bounds.
+pub fn validate_description(value: Option<&Value>) -> ApiResult<Option<Value>> {
+    let Some(value) = value else {
+        return Err(bad(INVALID_DESCRIPTION_MESSAGE));
+    };
+    normalize_optional_document(value).map_err(|_| bad(INVALID_DESCRIPTION_MESSAGE))
 }
 
 pub fn validate_post_title(value: &Value) -> ApiResult<String> {
@@ -540,21 +540,19 @@ pub fn remove_settlement_reference(
 pub struct ProvinceState {
     pub published: bool,
     pub slug: Option<String>,
-    pub description: String,
 }
 
 fn province_state_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvinceState> {
     Ok(ProvinceState {
         published: row.get::<_, i64>(1)? != 0,
         slug: row.get(2)?,
-        description: row.get(3)?,
     })
 }
 
 fn load_province(connection: &Connection, id: &str) -> ApiResult<Option<ProvinceState>> {
     connection
         .query_row(
-            "SELECT id, published, slug, description FROM provinces WHERE id = ?1",
+            "SELECT id, published, slug FROM provinces WHERE id = ?1",
             params![id],
             province_state_from_row,
         )
@@ -563,7 +561,7 @@ fn load_province(connection: &Connection, id: &str) -> ApiResult<Option<Province
 }
 
 fn load_all_provinces(connection: &Connection) -> ApiResult<HashMap<String, ProvinceState>> {
-    let mut statement = connection.prepare("SELECT id, published, slug, description FROM provinces")?;
+    let mut statement = connection.prepare("SELECT id, published, slug FROM provinces")?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, province_state_from_row(row)?))
     })?;
@@ -795,12 +793,23 @@ fn require_feature<'a>(
         .ok_or_else(|| ApiError::not_found("Губерния не найдена."))
 }
 
+/// Stored optional rich document as SQLite keeps it: the empty string is the
+/// "no description" sentinel, otherwise the row holds canonical document JSON.
+fn description_value(stored: Option<&str>) -> ApiResult<Value> {
+    let Some(raw) = stored.filter(|value| !value.is_empty()) else {
+        return Ok(Value::Null);
+    };
+    serde_json::from_str(raw).map_err(|error| {
+        ApiError::internal(format!("Stored province description is invalid JSON: {error}"))
+    })
+}
+
 pub fn build_published_gubernia(
     connection: &Connection,
     canonical: &CanonicalProvinces,
     id: &str,
     slug: &str,
-    description: &str,
+    description_json: Option<&str>,
 ) -> ApiResult<Value> {
     let feature = require_feature(canonical, id)?;
     let posts = load_posts(connection, id)?
@@ -816,10 +825,7 @@ pub fn build_published_gubernia(
     out.insert("id".to_string(), Value::String(id.to_string()));
     out.insert("name".to_string(), Value::String(feature.name.clone()));
     out.insert("slug".to_string(), Value::String(slug.to_string()));
-    out.insert(
-        "description".to_string(),
-        Value::String(description.to_string()),
-    );
+    out.insert("description".to_string(), description_value(description_json)?);
     out.insert("posts".to_string(), Value::Array(posts));
     out.insert("settlements".to_string(), Value::Array(settlements));
     Ok(Value::Object(out))
@@ -960,17 +966,21 @@ pub fn find_published_gubernia_by_slug(
     canonical: &CanonicalProvinces,
     slug: &str,
 ) -> ApiResult<Option<Value>> {
-    let row: Option<(String, String, String)> = connection
+    let row: Option<(String, String, Option<String>)> = connection
         .query_row(
-            "SELECT id, slug, description FROM provinces WHERE published = 1 AND slug = ?1",
+            "SELECT id, slug, description_json FROM provinces WHERE published = 1 AND slug = ?1",
             params![slug],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
     match row {
-        Some((id, slug, description)) => {
-            Ok(Some(build_published_gubernia(connection, canonical, &id, &slug, &description)?))
-        }
+        Some((id, slug, description_json)) => Ok(Some(build_published_gubernia(
+            connection,
+            canonical,
+            &id,
+            &slug,
+            description_json.as_deref(),
+        )?)),
         None => Ok(None),
     }
 }
@@ -1004,16 +1014,16 @@ pub fn find_published_settlement_by_slug(
         return Ok(None);
     }
     let url = format!("{SETTLEMENT_URL_PREFIX}{slug}");
-    let sql = "SELECT s.id, s.province_id, s.name, s.uyezd_id, s.latitude, s.longitude, s.created_at, s.url, s.type, p.slug, p.description\n\
+    let sql = "SELECT s.id, s.province_id, s.name, s.uyezd_id, s.latitude, s.longitude, s.created_at, s.url, s.type, p.slug, p.description_json\n\
          FROM settlements s JOIN provinces p ON p.id = s.province_id\n\
          WHERE p.published = 1 AND COALESCE(s.url, '/naselennyy-punkt/' || s.id) = ?1\n\
          LIMIT 1";
-    let row: Option<(SettlementRow, String, String)> = connection
+    let row: Option<(SettlementRow, String, Option<String>)> = connection
         .query_row(&sql, params![url], |row| {
             Ok((settlement_from_row(row)?, row.get(9)?, row.get(10)?))
         })
         .optional()?;
-    let Some((settlement, slug, description)) = row else {
+    let Some((settlement, slug, description_json)) = row else {
         return Ok(None);
     };
     let gubernia = build_published_gubernia(
@@ -1021,7 +1031,7 @@ pub fn find_published_settlement_by_slug(
         canonical,
         &settlement.province_id,
         &slug,
-        &description,
+        description_json.as_deref(),
     )?;
     Ok(Some(serde_json::json!({
         "settlement": settlement_value(&settlement),
@@ -1045,10 +1055,10 @@ pub fn publish_gubernia(
     }
     assert_unique_slug(&transaction, &slug, Some(id))?;
     transaction.execute(
-        "UPDATE provinces SET published = 1, slug = ?1, description = '' WHERE id = ?2",
+        "UPDATE provinces SET published = 1, slug = ?1, description_json = '' WHERE id = ?2",
         params![slug, id],
     )?;
-    let gubernia = build_published_gubernia(&transaction, canonical, id, &slug, "")?;
+    let gubernia = build_published_gubernia(&transaction, canonical, id, &slug, None)?;
     transaction.commit()?;
     Ok(gubernia)
 }
@@ -1058,7 +1068,7 @@ pub fn update_gubernia_publication(
     canonical: &CanonicalProvinces,
     id: &str,
     slug_value: &Value,
-    description_value: &Value,
+    description_value: Option<&Value>,
 ) -> ApiResult<Value> {
     let slug = validate_slug(slug_value)?;
     let description = validate_description(description_value)?;
@@ -1066,11 +1076,20 @@ pub fn update_gubernia_publication(
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_published(&transaction, id)?;
     assert_unique_slug(&transaction, &slug, Some(id))?;
+    let description_json = description
+        .map(|document| serde_json::to_string(&document))
+        .transpose()?;
     transaction.execute(
-        "UPDATE provinces SET slug = ?1, description = ?2 WHERE id = ?3",
-        params![slug, description, id],
+        "UPDATE provinces SET slug = ?1, description_json = ?2 WHERE id = ?3",
+        params![slug, description_json.as_deref().unwrap_or(""), id],
     )?;
-    let gubernia = build_published_gubernia(&transaction, canonical, id, &slug, &description)?;
+    let gubernia = build_published_gubernia(
+        &transaction,
+        canonical,
+        id,
+        &slug,
+        description_json.as_deref(),
+    )?;
     transaction.commit()?;
     Ok(gubernia)
 }
@@ -1106,7 +1125,7 @@ pub fn unpublish_gubernia(
     transaction.execute("DELETE FROM posts WHERE province_id = ?1", params![id])?;
     transaction.execute("DELETE FROM settlements WHERE province_id = ?1", params![id])?;
     transaction.execute(
-        "UPDATE provinces SET published = 0, slug = NULL, description = '' WHERE id = ?1",
+        "UPDATE provinces SET published = 0, slug = NULL, description_json = '' WHERE id = ?1",
         params![id],
     )?;
     transaction.commit()?;

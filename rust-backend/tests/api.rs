@@ -19,6 +19,55 @@ async fn api(
     send(app, request(http_method, uri, cookie, body.as_ref())).await
 }
 
+/// A rich province description: a formatted paragraph with a link whose
+/// `target` is validated but never persisted, a deliberately blank middle
+/// paragraph and a list, so canonicalisation and blank lines stay covered.
+fn rich_description() -> Value {
+    json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "Справочные сведения",
+                    "marks": [
+                        { "type": "bold" },
+                        { "type": "link", "attrs": { "href": "https://example.com", "target": "_blank" } }
+                    ]
+                }]
+            },
+            { "type": "paragraph" },
+            {
+                "type": "heading",
+                "attrs": { "level": 2, "textAlign": "center" },
+                "content": [{ "type": "text", "text": "Заголовок" }]
+            },
+            {
+                "type": "bulletList",
+                "content": [{
+                    "type": "listItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "Пункт" }]
+                    }]
+                }]
+            }
+        ]
+    })
+}
+
+/// The stored form of [`rich_description`]: `target` is dropped by the same
+/// normalisation the post bodies use.
+fn canonical_description() -> Value {
+    let mut document = rich_description();
+    document["content"][0]["content"][0]["marks"] = json!([
+        { "type": "bold" },
+        { "type": "link", "attrs": { "href": "https://example.com" } }
+    ]);
+    document
+}
+
 #[tokio::test]
 async fn bootstrap_preserves_fixture_state_and_legacy_shapes() {
     let env = TestEnv::new();
@@ -385,7 +434,7 @@ async fn gubernia_publication_lifecycle() {
             "id": "gubernia-1897-1",
             "name": "Губерния 1",
             "slug": "one",
-            "description": "",
+            "description": null,
             "posts": [],
             "settlements": [],
         })
@@ -410,25 +459,26 @@ async fn gubernia_publication_lifecycle() {
         Method::PATCH,
         "/api/gubernias/gubernia-1897-1",
         Some(&cookie),
-        Some(json!({ "slug": "one-updated", "description": "Описание" })),
+        Some(json!({ "slug": "one-updated", "description": paragraph_doc("Описание") })),
     )
     .await;
     assert_eq!(updated.status, StatusCode::OK);
     assert_eq!(updated.body["slug"], "one-updated");
-    assert_eq!(updated.body["description"], "Описание");
+    assert_eq!(updated.body["description"], paragraph_doc("Описание"));
 
-    let too_long = api(
+    // The clean cutover has no string shim: plain text is not a document.
+    let legacy_string = api(
         &app,
         Method::PATCH,
         "/api/gubernias/gubernia-1897-1",
         Some(&cookie),
-        Some(json!({ "slug": "one-updated", "description": "x".repeat(20_001) })),
+        Some(json!({ "slug": "one-updated", "description": "Описание" })),
     )
     .await;
-    assert_eq!(too_long.status, StatusCode::BAD_REQUEST);
+    assert_eq!(legacy_string.status, StatusCode::BAD_REQUEST);
     assert_eq!(
-        too_long.error_message(),
-        "Описание должно быть строкой не длиннее 20000 символов."
+        legacy_string.error_message(),
+        "Некорректное содержимое описания."
     );
 
     let unpublished = api(
@@ -452,6 +502,193 @@ async fn gubernia_publication_lifecycle() {
     .await;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
     assert_eq!(again.error_message(), "Губерния не опубликована.");
+}
+
+#[tokio::test]
+async fn province_description_documents_survive_restart_and_embed_in_snapshots() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+
+    // Imported provinces start with no description at all.
+    let before = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.body["description"], Value::Null);
+
+    let updated = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({ "slug": "ryazanskaya", "description": rich_description() })),
+    )
+    .await;
+    assert_eq!(updated.status, StatusCode::OK);
+    assert_eq!(updated.body["description"], canonical_description());
+
+    // The public snapshot that feeds the province page returns the document.
+    let public = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(public.status, StatusCode::OK);
+    assert_eq!(public.body["description"], canonical_description());
+
+    // The settlement snapshot embeds the same province document.
+    let settlement = api(
+        &app,
+        Method::GET,
+        &format!("/internal/settlement/{LEGACY_SETTLEMENT_ID}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(settlement.status, StatusCode::OK);
+    assert_eq!(
+        settlement.body["gubernia"]["description"],
+        canonical_description()
+    );
+
+    // A restart reads the stored document back unchanged.
+    env.prepare_again().expect("restart is idempotent");
+    let restarted = TestEnv::router_for_config(&env.config);
+    let after = api(&restarted, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(after.body["description"], canonical_description());
+}
+
+#[tokio::test]
+async fn province_description_rejects_unsafe_and_oversized_documents() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let url = "/api/gubernias/ryazan";
+
+    let unsafe_node = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": {
+                "type": "doc",
+                "content": [{ "type": "image", "src": "https://example.com/x.png" }]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(unsafe_node.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        unsafe_node.error_message(),
+        "Некорректное содержимое описания."
+    );
+
+    let unsafe_link = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": {
+                "type": "doc",
+                "content": [{ "type": "paragraph", "content": [{
+                    "type": "text",
+                    "text": "x",
+                    "marks": [{ "type": "link", "attrs": { "href": "javascript:alert(1)" } }]
+                }]}]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(unsafe_link.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        unsafe_link.error_message(),
+        "Некорректное содержимое описания."
+    );
+
+    // Omitting the field was rejected before the cutover and stays rejected,
+    // so a slug-only edit can never silently wipe the description.
+    let missing = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({ "slug": "ryazanskaya" })),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST);
+    assert_eq!(missing.error_message(), "Некорректное содержимое описания.");
+
+    // Bodies beyond the document bound are refused before validation.
+    let oversized = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": {
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": "x".repeat(620_000) }]
+                }]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(oversized.status, StatusCode::BAD_REQUEST);
+    assert_eq!(oversized.error_message(), "Тело запроса слишком большое.");
+
+    // Rejected writes never touched the stored state.
+    let stored = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(stored.body["description"], Value::Null);
+
+    // A blank document and `null` both clear the field.
+    let set = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({ "slug": "ryazanskaya", "description": rich_description() })),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK);
+    assert_eq!(set.body["description"], canonical_description());
+
+    let cleared_with_blank = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": { "type": "doc", "content": [] }
+        })),
+    )
+    .await;
+    assert_eq!(cleared_with_blank.status, StatusCode::OK);
+    assert_eq!(cleared_with_blank.body["description"], Value::Null);
+
+    let set_again = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({ "slug": "ryazanskaya", "description": rich_description() })),
+    )
+    .await;
+    assert_eq!(set_again.body["description"], canonical_description());
+
+    let cleared_with_null = api(
+        &app,
+        Method::PATCH,
+        url,
+        Some(&cookie),
+        Some(json!({ "slug": "ryazanskaya", "description": null })),
+    )
+    .await;
+    assert_eq!(cleared_with_null.status, StatusCode::OK);
+    assert_eq!(cleared_with_null.body["description"], Value::Null);
 }
 
 #[tokio::test]

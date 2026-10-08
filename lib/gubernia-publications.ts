@@ -41,7 +41,8 @@ export type PublishedGubernia = {
   id: string;
   name: string;
   slug: string;
-  description: string;
+  /** Rich-text reference block; null when the admin stored no description. */
+  description: PostDocument | null;
   posts: GuberniaPost[];
   settlements: Settlement[];
 };

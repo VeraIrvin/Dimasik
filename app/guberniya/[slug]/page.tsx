@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import SiteHeader from "@/components/SiteHeader";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getPublishedGeoData, getPublishedGuberniaBySlug } from "@/lib/gubernia-publications";
 import { getSiteSettings } from "@/lib/site-settings";
@@ -27,35 +28,38 @@ export default async function GuberniaPage({
   const hasPosts = gubernia.posts.length > 0;
 
   return (
-    <main className={`${styles.page} ${hasPosts ? styles.withPosts : ""}`}>
-      <header className={styles.header} id="province-page-header">
-        <Link className={`content-page__back ${styles.back}`} href="/">
-          ← Вернуться к карте
-        </Link>
-        <p className={`content-page__eyebrow ${styles.eyebrow}`}>
-          Историко-генеалогический портал Дмитрия Воробьева
-        </p>
-        <h1 className={`content-page__title ${styles.title}`}>{gubernia.name}</h1>
-      </header>
+    <>
+      <SiteHeader isAdmin={isAdmin} />
+      <main className={`${styles.page} ${hasPosts ? styles.withPosts : ""}`}>
+        <header className={styles.header} id="province-page-header">
+          <Link className={`content-page__back ${styles.back}`} href="/">
+            ← Вернуться к карте
+          </Link>
+          <p className={`content-page__eyebrow ${styles.eyebrow}`}>
+            Историко-генеалогический портал Дмитрия Воробьева
+          </p>
+          <h1 className={`content-page__title ${styles.title}`}>{gubernia.name}</h1>
+        </header>
 
-      {isAdmin ? (
-        <div className={styles.adminSettings}>
-          <GuberniaAdminControls
-            id={gubernia.id}
-            slug={gubernia.slug}
-            description={gubernia.description}
-          />
-        </div>
-      ) : null}
+        {isAdmin ? (
+          <div className={styles.adminSettings}>
+            <GuberniaAdminControls
+              id={gubernia.id}
+              slug={gubernia.slug}
+              description={gubernia.description}
+            />
+          </div>
+        ) : null}
 
-      <ProvinceExplorer
-        gubernia={gubernia}
-        provinces={geoData.provinces}
-        settlements={geoData.settlements}
-        categories={settings.categories}
-        settlementTypes={settings.settlementTypes}
-        isAdmin={isAdmin}
-      />
-    </main>
+        <ProvinceExplorer
+          gubernia={gubernia}
+          provinces={geoData.provinces}
+          settlements={geoData.settlements}
+          categories={settings.categories}
+          settlementTypes={settings.settlementTypes}
+          isAdmin={isAdmin}
+        />
+      </main>
+    </>
   );
 }

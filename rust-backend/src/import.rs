@@ -7,18 +7,23 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::content::normalize_post_document;
+use crate::content::{legacy_description_json, normalize_post_document};
 use crate::db;
 use crate::geo::{CanonicalProvinces, DistrictCollection, GeoRuntime};
 use crate::store::{
-    default_settings_lists, SettingsLists, MAX_ARCHIVE_REFERENCE_LENGTH, MAX_DESCRIPTION_LENGTH,
-    MAX_ID_LENGTH, MAX_SETTLEMENT_NAME_LENGTH, MAX_SETTINGS_ITEMS, MAX_SETTINGS_NAME_CHARACTERS,
+    default_settings_lists, SettingsLists, MAX_ARCHIVE_REFERENCE_LENGTH, MAX_ID_LENGTH,
+    MAX_SETTLEMENT_NAME_LENGTH, MAX_SETTINGS_ITEMS, MAX_SETTINGS_NAME_CHARACTERS,
     MAX_STORED_SETTING_NAME_LENGTH, MAX_TITLE_LENGTH, MAX_YEAR_LENGTH,
 };
 use crate::util::{
     effective_settlement_url, is_valid_settlement_url, is_valid_slug, iso_now,
     js_collapse_whitespace, js_trim, parse_js_date_ms, utf16_len,
 };
+
+/// The previous string API capped descriptions at 20 000 UTF-16 units; the
+/// legacy publication fixture keeps that bound while the converted document
+/// follows the shared rich-text resource limits.
+const MAX_LEGACY_DESCRIPTION_LENGTH: usize = 20_000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ImportSummary {
@@ -57,7 +62,8 @@ struct ImportPost {
 struct ImportEntry {
     published: bool,
     slug: Option<String>,
-    description: String,
+    /// Canonical rich document JSON; `None` is the "no description" state.
+    description_json: Option<String>,
     posts: Vec<ImportPost>,
     settlements: Vec<ImportSettlement>,
 }
@@ -366,7 +372,7 @@ fn seed_from_canonical(canonical: &CanonicalProvinces) -> ImportState {
                 ImportEntry {
                     published,
                     slug,
-                    description: String::new(),
+                    description_json: None,
                     posts: Vec::new(),
                     settlements: Vec::new(),
                 },
@@ -423,19 +429,21 @@ fn parse_publication_state(
                 "Gubernia publication state has invalid fields for {id}."
             ));
         };
-        let Some(description) = entry.get("description").and_then(Value::as_str) else {
+        let Some(legacy_description) = entry.get("description").and_then(Value::as_str) else {
             return Err(format!(
                 "Gubernia publication state has invalid fields for {id}."
             ));
         };
-        if utf16_len(description) > MAX_DESCRIPTION_LENGTH {
+        if utf16_len(legacy_description) > MAX_LEGACY_DESCRIPTION_LENGTH {
             return Err(format!(
                 "Gubernia publication state has invalid fields for {id}."
             ));
         }
-        let description = description.to_string();
 
         if published {
+            let description_json = legacy_description_json(legacy_description).map_err(|error| {
+                format!("Gubernia publication state has an invalid description for {id}: {error}")
+            })?;
             let slug = match entry.get("slug") {
                 Some(Value::String(slug)) if is_valid_slug(slug) => slug.clone(),
                 _ => {
@@ -503,7 +511,7 @@ fn parse_publication_state(
                 ImportEntry {
                     published: true,
                     slug: Some(slug),
-                    description,
+                    description_json,
                     posts,
                     settlements,
                 },
@@ -513,7 +521,7 @@ fn parse_publication_state(
                 value.is_none_or(|item| matches!(item, Value::Array(items) if items.is_empty()))
             };
             if entry.get("slug") != Some(&Value::Null)
-                || !description.is_empty()
+                || !legacy_description.is_empty()
                 || !empty(entry.get("posts"))
                 || !empty(entry.get("settlements"))
             {
@@ -526,7 +534,7 @@ fn parse_publication_state(
                 ImportEntry {
                     published: false,
                     slug: None,
-                    description: String::new(),
+                    description_json: None,
                     posts: Vec::new(),
                     settlements: Vec::new(),
                 },
@@ -979,12 +987,12 @@ fn write_sources(
     for (id, entry) in &sources.state.entries {
         transaction
             .execute(
-                "INSERT INTO provinces (id, published, slug, description) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO provinces (id, published, slug, description_json) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     id,
                     if entry.published { 1i64 } else { 0i64 },
                     entry.slug.as_deref(),
-                    entry.description.as_str(),
+                    entry.description_json.as_deref().unwrap_or_default(),
                 ],
             )
             .map_err(|error| error.to_string())?;

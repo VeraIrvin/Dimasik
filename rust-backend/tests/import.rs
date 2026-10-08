@@ -352,7 +352,123 @@ async fn concurrent_bootstrap_processes_import_exactly_once() {
     let migrations: i64 = connection
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(migrations, 2, "each migration is recorded once");
+    assert_eq!(migrations, 3, "each migration is recorded once");
+}
+
+#[test]
+fn migration_converts_plain_text_province_descriptions_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let database_path = dir.path().join("legacy/dimasik.sqlite");
+    let mut connection = db::open_database(&database_path).unwrap();
+    // Rebuild the version-2 schema exactly as an upgraded live database has it.
+    connection
+        .execute_batch(include_str!("../migrations/0001_init.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0002_districts.sql"))
+        .unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);\n\
+             INSERT INTO schema_migrations (version, applied_at) VALUES (1, '2026-10-01T00:00:00.000Z'), (2, '2026-10-01T00:00:00.000Z');",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO provinces (id, published, slug, description) VALUES\n\
+             ('ryazan', 1, 'ryazanskaya', ?1),\n\
+             ('tula', 0, NULL, ''),\n\
+             ('abos', 1, 'abos', ?2)",
+            rusqlite::params!["Первая строка\n\nВторая", "   "],
+        )
+        .unwrap();
+
+    db::migrate(&mut connection).unwrap();
+
+    let versions: Vec<i64> = {
+        let mut statement = connection
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap();
+        let rows = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
+        rows.map(|row| row.unwrap()).collect()
+    };
+    assert_eq!(versions, vec![1, 2, 3]);
+
+    let columns: Vec<String> = {
+        let mut statement = connection.prepare("PRAGMA table_info(provinces)").unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap();
+        rows.map(|row| row.unwrap()).collect()
+    };
+    assert!(columns.contains(&"description_json".to_string()));
+    assert!(
+        !columns.contains(&"description".to_string()),
+        "the legacy column is gone: {columns:?}"
+    );
+
+    let converted: String = connection
+        .query_row(
+            "SELECT description_json FROM provinces WHERE id = 'ryazan'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&converted).unwrap(),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "Первая строка" }] },
+                { "type": "paragraph" },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "Вторая" }] }
+            ]
+        })
+    );
+    // Whitespace-only legacy text keeps the "no description" sentinel.
+    let sentinel: String = connection
+        .query_row(
+            "SELECT description_json FROM provinces WHERE id = 'abos'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sentinel, "");
+    // Publication state survives the conversion.
+    let state: (i64, Option<String>) = connection
+        .query_row(
+            "SELECT published, slug FROM provinces WHERE id = 'ryazan'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, (1, Some("ryazanskaya".to_string())));
+    // The renamed CHECK still ties the sentinel to the unpublished state.
+    assert!(connection
+        .execute(
+            "UPDATE provinces SET description_json = '{\"type\":\"doc\"}' WHERE id = 'tula'",
+            [],
+        )
+        .is_err());
+
+    // Re-running the migration keeps the same version and the same rows.
+    db::migrate(&mut connection).unwrap();
+    let versions_again: Vec<i64> = {
+        let mut statement = connection
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap();
+        let rows = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
+        rows.map(|row| row.unwrap()).collect()
+    };
+    assert_eq!(versions_again, vec![1, 2, 3]);
+    let converted_again: String = connection
+        .query_row(
+            "SELECT description_json FROM provinces WHERE id = 'ryazan'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(converted_again, converted);
 }
 
 #[tokio::test]
@@ -392,6 +508,76 @@ async fn integral_float_ordered_list_starts_import_as_integers() {
         gubernia.body["posts"][0]["body"]["content"][0]["attrs"]["start"],
         json!(2)
     );
+}
+
+#[tokio::test]
+async fn legacy_plain_text_descriptions_import_as_rich_documents() {
+    let dir = standard_fixture_dir();
+    let publication_path = dir.path().join("data/gubernia-publications.json");
+    let mut value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
+    value["gubernias"]["ryazan"]["description"] =
+        json!("Строка «раз»\n\nСтрока с \"кавычками\" и \\слэшем");
+    value["gubernias"]["tula"]["description"] = json!("   \n\t");
+    write_json(&publication_path, &value);
+
+    let env = TestEnv::from_dir(dir);
+    let app = env.app.clone();
+
+    let ryazan = send(
+        &app,
+        request(Method::GET, "/internal/gubernia/ryazanskaya", None, None),
+    )
+    .await;
+    assert_eq!(ryazan.status, StatusCode::OK);
+    assert_eq!(
+        ryazan.body["description"],
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "Строка «раз»" }] },
+                { "type": "paragraph" },
+                {
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": "Строка с \"кавычками\" и \\слэшем" }]
+                }
+            ]
+        })
+    );
+
+    // Whitespace-only legacy text becomes the "no description" state.
+    let tula = send(
+        &app,
+        request(Method::GET, "/internal/gubernia/tulskaya", None, None),
+    )
+    .await;
+    assert_eq!(tula.body["description"], Value::Null);
+
+    // The historical 20 000 UTF-16 unit boundary still imports...
+    let boundary_dir = standard_fixture_dir();
+    let boundary_path = boundary_dir.path().join("data/gubernia-publications.json");
+    let mut boundary: Value =
+        serde_json::from_str(&std::fs::read_to_string(&boundary_path).unwrap()).unwrap();
+    boundary["gubernias"]["tula"]["description"] = json!("x".repeat(20_000));
+    write_json(&boundary_path, &boundary);
+    let boundary_state = prepare(&base_config(boundary_dir.path())).expect("20 000 units import");
+    let boundary_app = build_router(boundary_state);
+    let tula = send(
+        &boundary_app,
+        request(Method::GET, "/internal/gubernia/tulskaya", None, None),
+    )
+    .await;
+    assert_eq!(tula.body["description"], paragraph_doc(&"x".repeat(20_000)));
+
+    // ...while 20 001 units are rejected exactly like before the cutover.
+    let oversized_dir = standard_fixture_dir();
+    let oversized_path = oversized_dir.path().join("data/gubernia-publications.json");
+    let mut oversized: Value =
+        serde_json::from_str(&std::fs::read_to_string(&oversized_path).unwrap()).unwrap();
+    oversized["gubernias"]["tula"]["description"] = json!("x".repeat(20_001));
+    write_json(&oversized_path, &oversized);
+    let error = prepare_error(&base_config(oversized_dir.path()));
+    assert!(error.contains("invalid fields"), "got: {error}");
 }
 
 #[tokio::test]
@@ -741,7 +927,7 @@ async fn fixture_publication_state_imports_every_canonical_entry() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(migration_version, 2);
+    assert_eq!(migration_version, 3);
 
     // The district registry mirrors the canonical district files: all 76
     // provinces ship a file in the fixture (ryazan has two districts).

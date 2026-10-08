@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import Link from "next/link";
 import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import PostAdminControls from "./PostAdminControls";
@@ -17,12 +16,10 @@ type Props = {
   isAdmin: boolean;
   ariaLabel: string;
   emptyMessage: string;
-  /** Keeps the title navigator visible when `posts` is empty (a filtered province feed). */
+  /** Keeps the title navigator visible when `posts` is empty (a filtered feed). */
   keepSidebarWhenEmpty?: boolean;
-  /** Left column heading; the right column keeps the posts themselves. */
+  /** Table-of-contents heading shown above the post links. */
   sidebarHeading?: string;
-  /** Optional controls rendered before the heading in the sticky title navigator. */
-  sidebarControls?: ReactNode;
 };
 
 /** Shared two-column province/settlement feed: title navigator plus full post articles. */
@@ -37,8 +34,7 @@ export default function PostFeed({
   ariaLabel,
   emptyMessage,
   keepSidebarWhenEmpty = false,
-  sidebarHeading = "Сообщения",
-  sidebarControls,
+  sidebarHeading = "Содержание",
 }: Props) {
   const settlementById: Record<string, Settlement> = Object.fromEntries(
     settlements.map((settlement): [string, Settlement] => [settlement.id, settlement]),
@@ -53,12 +49,8 @@ export default function PostFeed({
   }
 
   return (
-    <div className={sidebarControls ? `${styles.feed} ${styles.feedWithControls}` : styles.feed}>
-      <aside
-        className={sidebarControls ? `${styles.sidebar} ${styles.sidebarWithControls}` : styles.sidebar}
-        aria-label="Содержание сообщений"
-      >
-        {sidebarControls ? <div className={styles.sidebarControls}>{sidebarControls}</div> : null}
+    <div className={styles.feed}>
+      <aside className={styles.sidebar} aria-label="Содержание сообщений">
         <h2 className={styles.sidebarHeading}>{sidebarHeading}</h2>
         <nav className={styles.sidebarNav} aria-label="Перейти к сообщению">
           <ol className={styles.postLinks}>

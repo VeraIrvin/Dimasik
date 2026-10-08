@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import AdminCreationPanel from "@/app/guberniya/[slug]/AdminCreationPanel";
+import SiteHeader from "@/components/SiteHeader";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getPublishedGeoData, getPublishedSettlementBySlug } from "@/lib/gubernia-publications";
 import { getSettlementReference } from "@/lib/settlement-reference";
 import { getSiteSettings } from "@/lib/site-settings";
 import { getUyezd } from "@/lib/uyezd-data";
-import SettlementBackNavigation from "./SettlementBackNavigation";
 import SettlementReferenceEditor from "./SettlementReferenceEditor";
 import SettlementPostExplorer from "./SettlementPostExplorer";
 import styles from "./page.module.css";
@@ -46,6 +46,7 @@ export default async function SettlementPage({
   // settlement district is the only name the feed can need.
   const districtNames: Record<string, string> = uyeza ? { [uyeza.id]: uyeza.name } : {};
   const posts = gubernia.posts.filter((post) => post.settlementId === settlement.id);
+  const hasPosts = posts.length > 0;
   const backHref = from === "settlements"
     ? "/?view=settlements"
     : from === "province"
@@ -53,95 +54,100 @@ export default async function SettlementPage({
       : "/";
 
   return (
-    <main className={`content-page ${styles.page}`}>
-      <header id="settlement-page-header">
-        <Link className={`content-page__back ${styles.back}`} href={backHref}>
-          ← Вернуться к карте
-        </Link>
-        <p className={`content-page__eyebrow ${styles.eyebrow}`}>
-          Историко-генеалогический портал Дмитрия Воробьева
-        </p>
-        <h1 className="content-page__title">{settlement.name}</h1>
-      </header>
+    <>
+      <SiteHeader isAdmin={isAdmin} />
+      <main className={`content-page ${styles.page} ${hasPosts ? styles.withPosts : ""}`}>
+        <header className={styles.header} id="settlement-page-header">
+          <Link className={`content-page__back ${styles.back}`} href={backHref}>
+            ← Вернуться к карте
+          </Link>
+          <p className={`content-page__eyebrow ${styles.eyebrow}`}>
+            Историко-генеалогический портал Дмитрия Воробьева
+          </p>
+          <h1 className={`content-page__title ${styles.title}`}>{settlement.name}</h1>
+        </header>
 
-      <SettlementBackNavigation href={backHref} />
+        {/* Admin row slot: «Редактировать/Удалить населённый пункт» above the details. */}
+        <div id={SETTLEMENT_ADMIN_SLOT_ID} className={styles.adminSlot} />
 
-      {/* Admin row slot: «Редактировать/Удалить населённый пункт» above the details. */}
-      <div id={SETTLEMENT_ADMIN_SLOT_ID} />
-
-      <dl className={styles.details}>
-        <div className={styles.detail}>
-          <dt className={styles.detailLabel}>Губерния</dt>
-          <dd className={styles.detailValue}>
-            <Link
-              className={styles.provinceLink}
-              href={`/guberniya/${encodeURIComponent(gubernia.slug)}`}
-            >
-              {gubernia.name}
-            </Link>
-          </dd>
-        </div>
-        {uyeza ? (
+        <dl className={styles.details}>
+          {settlement.type ? (
+            <div className={styles.detail}>
+              <dt className={styles.detailLabel}>Тип населённого пункта</dt>
+              <dd className={styles.detailValue}>{settlement.type}</dd>
+            </div>
+          ) : null}
+          {uyeza ? (
+            <div className={styles.detail}>
+              <dt className={styles.detailLabel}>Уезд</dt>
+              <dd className={styles.detailValue}>{uyeza.name}</dd>
+            </div>
+          ) : null}
           <div className={styles.detail}>
-            <dt className={styles.detailLabel}>Уезд</dt>
-            <dd className={styles.detailValue}>{uyeza.name}</dd>
+            <dt className={styles.detailLabel}>Губерния</dt>
+            <dd className={styles.detailValue}>
+              <Link
+                className={styles.provinceLink}
+                href={`/guberniya/${encodeURIComponent(gubernia.slug)}`}
+              >
+                {gubernia.name}
+              </Link>
+            </dd>
+          </div>
+          <div className={styles.detail}>
+            <dt className={styles.detailLabel}>Координаты</dt>
+            <dd className={styles.detailValue}>
+              {settlement.latitude}, {settlement.longitude}
+            </dd>
+          </div>
+        </dl>
+
+        <section
+          id="settlement-reference"
+          className={styles.section}
+          aria-labelledby="settlement-reference-heading"
+        >
+          <h2 id="settlement-reference-heading" className={styles.sectionHeading}>
+            Справочные сведения
+          </h2>
+          <SettlementReferenceEditor
+            slug={slug}
+            initialBody={reference}
+            isAdmin={isAdmin}
+            settlementId={settlement.id}
+            guberniaId={gubernia.id}
+            settlementName={settlement.name}
+            backHref={backHref}
+            adminSlotId={SETTLEMENT_ADMIN_SLOT_ID}
+          />
+        </section>
+
+        {isAdmin ? (
+          <div className={styles.composer}>
+            <AdminCreationPanel
+              guberniaId={gubernia.id}
+              provinces={geoData.provinces}
+              settlements={geoData.settlements}
+              categories={settings.categories}
+              settlementTypes={settings.settlementTypes}
+              defaultSettlementId={settlement.id}
+            />
           </div>
         ) : null}
-        {settlement.type ? (
-          <div className={styles.detail}>
-            <dt className={styles.detailLabel}>Тип населённого пункта</dt>
-            <dd className={styles.detailValue}>{settlement.type}</dd>
-          </div>
-        ) : null}
-        <div className={styles.detail}>
-          <dt className={styles.detailLabel}>Координаты</dt>
-          <dd className={styles.detailValue}>
-            {settlement.latitude}, {settlement.longitude}
-          </dd>
-        </div>
-      </dl>
 
-      <section className={styles.section} aria-labelledby="settlement-reference-heading">
-        <h2 id="settlement-reference-heading" className={styles.sectionHeading}>
-          Справочные сведения
-        </h2>
-        <SettlementReferenceEditor
-          slug={slug}
-          initialBody={reference}
-          isAdmin={isAdmin}
-          settlementId={settlement.id}
-          guberniaId={gubernia.id}
-          settlementName={settlement.name}
-          backHref={backHref}
-          adminSlotId={SETTLEMENT_ADMIN_SLOT_ID}
-        />
-      </section>
-
-      {isAdmin ? (
-        <div className={styles.composer}>
-          <AdminCreationPanel
+        <section className={styles.feedSection} aria-label="Сообщения населённого пункта">
+          <SettlementPostExplorer
+            posts={posts}
             guberniaId={gubernia.id}
             provinces={geoData.provinces}
             settlements={geoData.settlements}
             categories={settings.categories}
-            settlementTypes={settings.settlementTypes}
-            defaultSettlementId={settlement.id}
+            districtNames={districtNames}
+            isAdmin={isAdmin}
+            backHref={backHref}
           />
-        </div>
-      ) : null}
-
-      <section className={styles.feedSection} aria-label="Сообщения населённого пункта">
-        <SettlementPostExplorer
-          posts={posts}
-          guberniaId={gubernia.id}
-          provinces={geoData.provinces}
-          settlements={geoData.settlements}
-          categories={settings.categories}
-          districtNames={districtNames}
-          isAdmin={isAdmin}
-          backHref={backHref}
-        />
-      </section>
-    </main>
+        </section>
+      </main>
+    </>
   );
 }

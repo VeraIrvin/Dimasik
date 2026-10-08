@@ -44,7 +44,7 @@ export default function AdminCreationPanel({
           aria-controls={editorPanelId}
           onClick={() => toggle("post")}
         >
-          НОВОЕ СООБЩЕНИЕ
+          НОВАЯ ЗАПИСЬ
         </button>
         <button
           className={styles.creationButton}

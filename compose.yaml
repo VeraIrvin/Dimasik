@@ -1,0 +1,143 @@
+# Single-stack deployment: Traefik (Let's Encrypt) -> Next.js frontend -> Rust backend.
+#
+#   docker compose --env-file .env.compose up -d --build
+#
+# Only Traefik publishes host ports (80/443). The backend has no host port and
+# lives on the private `internal` network; it is reachable only from frontend.
+# Always run exactly ONE backend replica: a single SQLite writer owns the
+# `dimasik-data` volume (never use `--scale backend=2`).
+
+name: dimasik
+
+# Consumed BOTH at image build time (next.config.ts bakes the /api/* rewrite)
+# and at runtime for SSR /internal/* fetches. Keep build arg and environment
+# identical; renaming the backend service requires rebuilding the frontend.
+x-backend-url: &backend-url http://backend:8787
+
+services:
+  traefik:
+    image: traefik:v3.7.14
+    restart: unless-stopped
+    command:
+      - --global.checknewversion=false
+      - --global.sendanonymoususage=false
+      - --ping=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=dimasik_web
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      # Plain HTTP is only used for the ACME HTTP-01 challenge and redirects.
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in .env.compose}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Read-only socket: Traefik watches Docker labels. Anything with access to
+      # this socket is effectively root on the host.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # ACME account key and certificates; must be persisted across restarts.
+      - letsencrypt:/letsencrypt
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    # Healthcheck is inherited from the image (Dockerfile): GET /dokumenty on
+    # 127.0.0.1:3000. `depends_on: service_healthy` below relies on it.
+    build:
+      context: .
+      target: frontend
+      args:
+        BACKEND_URL: *backend-url
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: *backend-url
+    expose:
+      - "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - web
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.frontend.rule: "Host(`${DOMAIN:?Set DOMAIN in .env.compose}`)"
+      traefik.http.routers.frontend.entrypoints: websecure
+      traefik.http.routers.frontend.tls: "true"
+      traefik.http.routers.frontend.tls.certresolver: letsencrypt
+      traefik.http.services.frontend.loadbalancer.server.port: "3000"
+
+  backend:
+    # Healthcheck is inherited from the image (Dockerfile): GET /internal/session
+    # on 127.0.0.1:8787 (unauthenticated, no-store).
+    build:
+      context: .
+      target: backend
+    restart: unless-stopped
+    environment:
+      # The backend defaults to 127.0.0.1; inside the container it must listen
+      # on all interfaces so the frontend container can reach it on 8787.
+      BIND_ADDR: 0.0.0.0:8787
+      # SQLite lives in the named volume; WAL sidecars are written next to it.
+      DATABASE_PATH: /var/lib/dimasik/dimasik.sqlite
+      # Read-only first-bootstrap JSON seeds baked into the image from ./data/*
+      # (gitignored, so optional at build time). They are used only when the
+      # database has never been imported (no bootstrap marker); an existing
+      # database is migrated and never overwritten. Do NOT pass --fresh or
+      # --force to the long-running `serve`.
+      #
+      # Real content: place the four documents in ./data before the first build
+      # (or copy the pre-Docker JSON documents from the previous install) — they
+      # are then imported automatically on the first start.
+      # Intentional empty install: build without them, then run once:
+      #   docker compose --env-file .env.compose run --rm backend import --fresh
+      # (safe with an existing database: a marked database is left untouched)
+      IMPORT_DIR: /app/seed
+      PUBLIC_DATA_DIR: /app/public/data
+      FRONTEND_ORIGIN: "https://${DOMAIN:?Set DOMAIN in .env.compose}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:?Set ADMIN_USERNAME in .env.compose}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env.compose}"
+      ADMIN_SESSION_SECRET: "${ADMIN_SESSION_SECRET:?Set ADMIN_SESSION_SECRET in .env.compose (at least 32 characters)}"
+    volumes:
+      - dimasik-data:/var/lib/dimasik
+    expose:
+      - "8787"
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    # Explicit intent: one writer per SQLite file.
+    deploy:
+      replicas: 1
+
+networks:
+  # Explicit names because Traefik addresses the frontend network by name in
+  # --providers.docker.network.
+  web:
+    name: dimasik_web
+  internal:
+    name: dimasik_internal
+    # No route off the host: the backend has no internet access.
+    internal: true
+
+volumes:
+  # Mutable state: dimasik.sqlite plus its -wal/-shm sidecars. Never delete this
+  # volume unless you intend to start from the baked-in JSON seeds again.
+  dimasik-data:
+    name: dimasik-data
+  letsencrypt:
+    name: letsencrypt

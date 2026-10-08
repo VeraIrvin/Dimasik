@@ -16,6 +16,9 @@ use crate::AppState;
 /// plus the 8 KiB placement-metadata margin from the post routes.
 const MAX_POST_REQUEST_BYTES: usize = MAX_POST_DOCUMENT_JSON_CHARACTERS * 3 + 2_000;
 const POST_REQUEST_BYTES: usize = MAX_POST_REQUEST_BYTES + 8_192;
+/// Province PATCH carries a rich description document plus the slug, so it
+/// keeps the same document bound as the post routes.
+const GUBERNIA_REQUEST_BYTES: usize = MAX_POST_REQUEST_BYTES + 1_024;
 const SETTLEMENT_REQUEST_BYTES: usize = 4_096;
 const SETTINGS_REQUEST_BYTES: usize = 2_048;
 
@@ -78,13 +81,19 @@ pub async fn gubernia_patch(
     body: Body,
 ) -> ApiResult<Response> {
     http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
-    let payload = http::read_json_object(&headers, body, None).await?;
+    let payload = http::read_json_object(&headers, body, Some(GUBERNIA_REQUEST_BYTES)).await?;
     let slug = payload.get("slug").cloned().unwrap_or(Value::Null);
-    let description = payload.get("description").cloned().unwrap_or(Value::Null);
+    let description = payload.get("description").cloned();
     let canonical = state.canonical.clone();
     let value = state
         .call(move |conn| {
-            store::update_gubernia_publication(conn, &canonical, &id, &slug, &description)
+            store::update_gubernia_publication(
+                conn,
+                &canonical,
+                &id,
+                &slug,
+                description.as_ref(),
+            )
         })
         .await?;
     Ok(http::json_response(StatusCode::OK, value))

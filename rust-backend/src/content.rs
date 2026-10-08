@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use url::Url;
 
 use crate::util::{js_trim, utf16_len};
@@ -594,6 +594,68 @@ pub fn normalize_post_document(value: &Value) -> Result<Value, ContentError> {
     Ok(Value::Object(out))
 }
 
+/// Validates an optional rich document such as a province description:
+/// `null` clears the value and a structurally empty document is treated the
+/// same way, so admins can blank a field with either form. Everything else
+/// must satisfy the post whitelist and its resource bounds.
+pub fn normalize_optional_document(value: &Value) -> Result<Option<Value>, ContentError> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    match normalize_post_document(value) {
+        Ok(document) => Ok(Some(document)),
+        Err(ContentError(message)) if message == EMPTY_DOCUMENT_MESSAGE => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Converts a legacy plain-text description into the canonical paragraph-based
+/// rich document: one paragraph per line, blank lines staying empty paragraphs,
+/// CRLF/CR line endings normalised to LF. Tabs become spaces and control
+/// characters the rich-text whitelist cannot represent are dropped, so the
+/// result always survives `normalize_post_document` structurally.
+pub fn plain_text_to_document(text: &str) -> Value {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let content = normalized
+        .split('\n')
+        .map(|line| {
+            let visible: String = line
+                .chars()
+                .filter_map(|character| match character {
+                    '\t' => Some(' '),
+                    character if character <= '\u{001F}' || character == '\u{007F}' => None,
+                    character => Some(character),
+                })
+                .collect();
+            if js_trim(&visible).is_empty() {
+                return json!({ "type": "paragraph" });
+            }
+            json!({
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": visible }],
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "type": "doc", "content": content })
+}
+
+/// Storage value of a legacy plain-text description: `None` when the text has
+/// no visible content (the historical "no description" sentinel), otherwise
+/// the serialised paragraph document.
+pub fn legacy_description_json(text: &str) -> Result<Option<String>, String> {
+    let document = plain_text_to_document(text);
+    let has_visible_content = document
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|lines| lines.iter().any(|line| line.get("content").is_some()));
+    if !has_visible_content {
+        return Ok(None);
+    }
+    serde_json::to_string(&document)
+        .map(Some)
+        .map_err(|error| format!("Cannot serialise the converted description: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,5 +839,91 @@ mod tests {
         });
         let normalized = normalize_post_document(&dropped).unwrap();
         assert!(normalized["content"][0]["content"][0].get("marks").is_none());
+    }
+
+    #[test]
+    fn optional_documents_treat_null_and_blank_as_cleared() {
+        assert!(normalize_optional_document(&Value::Null).unwrap().is_none());
+        for empty in [
+            json!({ "type": "doc", "content": [] }),
+            json!({ "type": "doc", "content": [{ "type": "paragraph" }] }),
+            json!({
+                "type": "doc",
+                "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "   " }] }]
+            }),
+        ] {
+            assert!(normalize_optional_document(&empty).unwrap().is_none(), "{empty}");
+        }
+
+        let document = normalize_optional_document(&json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "x" }] }]
+        }))
+        .unwrap()
+        .expect("a visible document survives");
+        assert_eq!(document["content"][0]["content"][0]["text"], "x");
+
+        // Strings and unsafe documents are rejected, never treated as empty.
+        for invalid in [
+            json!("просто строка"),
+            json!(42),
+            json!({ "type": "doc", "content": [{ "type": "image", "src": "x" }] }),
+        ] {
+            assert!(normalize_optional_document(&invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn plain_text_converts_to_paragraphs_per_line() {
+        let document = plain_text_to_document("Первая\n\nВторая\tстрока");
+        assert_eq!(
+            document,
+            json!({
+                "type": "doc",
+                "content": [
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "Первая" }] },
+                    { "type": "paragraph" },
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "Вторая строка" }] }
+                ]
+            })
+        );
+        // The built document is structurally valid for the whitelist.
+        assert!(normalize_post_document(&document).is_ok());
+
+        // CRLF/CR become LF; other control characters cannot be represented.
+        let converted = plain_text_to_document("one\r\ntwo\rthree\u{0007}");
+        assert_eq!(converted["content"].as_array().unwrap().len(), 3);
+        assert_eq!(converted["content"][2]["content"][0]["text"], "three");
+
+        // A trailing newline keeps its empty last line.
+        let trailing = plain_text_to_document("one\n");
+        assert_eq!(trailing["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn legacy_descriptions_only_keep_visible_text() {
+        assert!(legacy_description_json("").unwrap().is_none());
+        assert!(legacy_description_json(" \n\t\n ").unwrap().is_none());
+        assert!(legacy_description_json("\r\n").unwrap().is_none());
+
+        let stored = legacy_description_json("строка \"в кавычках\" \\ слэшем\n\nвторая")
+            .unwrap()
+            .expect("visible text converts");
+        let parsed: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            parsed,
+            json!({
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "строка \"в кавычках\" \\ слэшем" }]
+                    },
+                    { "type": "paragraph" },
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "вторая" }] }
+                ]
+            })
+        );
+        assert!(normalize_post_document(&parsed).is_ok());
     }
 }
