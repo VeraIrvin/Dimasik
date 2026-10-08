@@ -11,7 +11,8 @@ import SettlementReferenceEditor from "./SettlementReferenceEditor";
 import SettlementPostExplorer from "./SettlementPostExplorer";
 import styles from "./page.module.css";
 
-// Publication state lives on disk, so every request must resolve the settlement anew.
+// Publication state lives in the Rust backend, so every request must resolve
+// the settlement anew.
 export const dynamic = "force-dynamic";
 
 export default async function SettlementPage({

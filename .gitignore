@@ -1,6 +1,7 @@
 node_modules/
 .next/
 out/
+rust-backend/target/
 public/maplibre/
 *.tsbuildinfo
 
@@ -36,5 +37,9 @@ backups/
 *.sqlite3
 *.db
 
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
 .DS_Store
 *.log

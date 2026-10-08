@@ -5,6 +5,8 @@
   "scripts": {
     "predev": "node scripts/copy-maplibre-worker.mjs",
     "dev": "next dev",
+    "backend:dev": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo run --manifest-path rust-backend/Cargo.toml -- serve",
+    "backend:import": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo run --manifest-path rust-backend/Cargo.toml -- import",
     "prebuild": "node scripts/copy-maplibre-worker.mjs",
     "build": "next build",
     "start": "next start",
