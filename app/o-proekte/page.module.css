@@ -59,7 +59,6 @@ main.page {
 }
 
 .sourceIntro {
-  max-width: 66ch;
   margin: 0 0 28px;
   color: var(--ink);
   font-size: 16px;
