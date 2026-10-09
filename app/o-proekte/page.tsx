@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getAboutContent } from "@/lib/about-content";
@@ -8,16 +9,30 @@ export default async function AboutPage() {
   const [body, isAdmin] = await Promise.all([getAboutContent(), hasAdminSession()]);
 
   return (
-    <main className="content-page">
+    <main className={`content-page ${styles.page}`}>
       <Link className={`content-page__back ${styles.back}`} href="/">
         ← Вернуться к карте
       </Link>
       <p className={`content-page__eyebrow ${styles.eyebrow}`}>
         Историко-генеалогический портал Дмитрия Воробьева
       </p>
-      <h1 className="content-page__title">О проекте</h1>
+      <h1 className={`content-page__title ${styles.title}`}>О проекте</h1>
 
-      <AboutContentEditor initialBody={body} isAdmin={isAdmin} />
+      <div className={styles.introduction}>
+        <div className={styles.portraitFrame}>
+          <Image
+            className={styles.portrait}
+            src="/project-portrait.jpg"
+            width={981}
+            height={1602}
+            sizes="(max-width: 800px) min(340px, calc(100vw - 48px)), 320px"
+            alt="Портрет на набережной"
+          />
+        </div>
+        <div className={styles.aboutContent}>
+          <AboutContentEditor initialBody={body} isAdmin={isAdmin} />
+        </div>
+      </div>
 
       <footer className={styles.credits} aria-label="Источники данных и авторство">
         <p className={styles.sourceIntro}>

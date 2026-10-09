@@ -6,6 +6,56 @@
   margin-top: 28px;
 }
 
+/* Local widening of the shared narrow content column: the header block stays
+   as it is, but the portrait-and-text composition needs more room. */
+main.page {
+  width: min(1100px, calc(100% - 48px));
+}
+
+.title {
+  overflow-wrap: break-word;
+}
+
+.introduction {
+  display: grid;
+  grid-template-columns: clamp(300px, 30%, 320px) minmax(0, 1fr);
+  align-items: start;
+  gap: clamp(48px, 6vw, 96px);
+}
+
+.portraitFrame {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line);
+}
+
+.portrait {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 5;
+  object-fit: cover;
+  object-position: 50% 18%;
+}
+
+.aboutContent {
+  min-width: 0;
+  max-width: 600px;
+}
+
+/* Portrait above text: single column, capped and centred, shared gutters kept. */
+@media (max-width: 800px) {
+  .introduction {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+
+  .portraitFrame {
+    width: min(340px, 100%);
+    margin: 0 auto;
+  }
+}
+
 .credits {
   margin-top: 64px;
   padding-top: 28px;
