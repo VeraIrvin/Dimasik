@@ -13,16 +13,19 @@ name = "dimasik-backend"
 path = "src/main.rs"
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"
+bytes = "1"
 hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+s3 = { package = "rust-s3", version = "0.35.1", default-features = false, features = ["fail-on-err", "tokio-rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 subtle = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 

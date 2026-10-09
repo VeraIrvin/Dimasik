@@ -6,6 +6,7 @@ pub mod geo;
 pub mod http;
 pub mod import;
 pub mod routes;
+pub mod s3;
 pub mod session;
 pub mod store;
 pub mod util;
@@ -19,11 +20,13 @@ use rusqlite::Connection;
 use crate::config::Config;
 use crate::error::{ApiError, ApiResult};
 use crate::geo::{CanonicalProvinces, GeoRuntime};
+use crate::s3::S3Storage;
 use crate::session::AuthConfig;
+use crate::util::now_unix;
 
 /// Shared state: one serialized SQLite connection (the analogue of the
 /// TypeScript in-process queues), the auth configuration, the cached canonical
-/// atlas and the district geometry cache.
+/// atlas, the district geometry cache and the optional image storage.
 #[derive(Clone)]
 pub struct AppState {
     pub connection: Arc<Mutex<Connection>>,
@@ -31,6 +34,9 @@ pub struct AppState {
     pub frontend_origin: Option<String>,
     pub canonical: Arc<CanonicalProvinces>,
     pub geo: Arc<GeoRuntime>,
+    /// `None` when the S3_* variables are unset: uploads answer 503 and the
+    /// rest of the API keeps working.
+    pub image_storage: Option<Arc<S3Storage>>,
 }
 
 impl AppState {
@@ -94,12 +100,16 @@ pub fn prepare(config: &Config) -> Result<AppState, String> {
         password: config.admin_password.clone(),
         secret: config.admin_session_secret.clone(),
     };
+    // Unconfigured storage is not an error (empty posts must keep working);
+    // partial or invalid S3_* configuration logs the reason and disables it.
+    let image_storage = S3Storage::setup(config).map(Arc::new);
     Ok(AppState {
         connection: Arc::new(Mutex::new(connection)),
         auth,
         frontend_origin: config.frontend_origin.clone(),
         canonical,
         geo,
+        image_storage,
     })
 }
 
@@ -118,6 +128,16 @@ pub fn build_router(state: AppState) -> Router {
             "/api/gubernias/{id}/posts/{post_id}",
             patch(routes::post_update).delete(routes::post_delete),
         )
+        .route(
+            "/api/post-images",
+            post(routes::post_image_upload)
+                .layer(axum::extract::DefaultBodyLimit::max(routes::MAX_UPLOAD_REQUEST_BYTES)),
+        )
+        .route(
+            "/api/post-images/{id}/{variant}",
+            get(routes::post_image_get),
+        )
+        .route("/api/post-images/{id}", delete(routes::post_image_delete))
         .route(
             "/api/gubernias/{id}/settlements",
             post(routes::settlement_create),
@@ -159,8 +179,93 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Deletes storage objects that no row needs any more — pending uploads past
+/// their TTL and rows detached from deleted posts — and drops each row only
+/// after both objects are gone. It runs once at startup and opportunistically
+/// after uploads and deletions.
+///
+/// Every candidate is fenced in the database before its objects are touched,
+/// so an upload that finishes its PUTs after the listing can no longer
+/// complete a row whose objects this pass deletes (and a post can no longer
+/// claim it). A pass walks the queue behind a `(sort_key, id)` cursor: a row
+/// whose deletion fails stays fenced with its persisted keys for a later pass,
+/// but it never stops the current pass from cleaning the rows behind it.
+pub async fn sweep_image_objects(state: &AppState) {
+    const BATCH: u32 = 32;
+    let Some(storage) = state.image_storage.clone() else {
+        return;
+    };
+    let mut cursor: Option<store::ImageCleanupCursor> = None;
+    loop {
+        let now_ms = now_unix() * 1_000;
+        let after = cursor.clone();
+        let batch = match state
+            .call(move |conn| store::list_image_cleanup_batch(conn, now_ms, after.as_ref(), BATCH))
+            .await
+        {
+            Ok(batch) => batch,
+            Err(error) => {
+                eprintln!(
+                    "Backend failure: image cleanup scan failed: {}",
+                    error.message
+                );
+                return;
+            }
+        };
+        let Some(last) = batch.last() else {
+            return;
+        };
+        cursor = Some(store::ImageCleanupCursor::after(last));
+        for image in batch {
+            let id = image.id.clone();
+            let claimed = match state
+                .call(move |conn| store::claim_image_cleanup(conn, &id, now_ms))
+                .await
+            {
+                Ok(claimed) => claimed,
+                Err(error) => {
+                    eprintln!(
+                        "Backend failure: cannot fence the image {} for cleanup: {}",
+                        image.id, error.message
+                    );
+                    continue;
+                }
+            };
+            let Some(fenced) = claimed else {
+                // The row stopped being a cleanup candidate: an upload
+                // completed, a post claimed it or another pass finished it.
+                continue;
+            };
+            if let Err(error) = storage
+                .delete_image(&fenced.original_key, &fenced.thumbnail_key)
+                .await
+            {
+                eprintln!(
+                    "Backend failure: cannot delete image objects for {}: {}",
+                    fenced.id, error.message
+                );
+                // The row stays fenced with its keys: a later pass retries it.
+                continue;
+            }
+            let id = fenced.id.clone();
+            match state
+                .call(move |conn| store::finish_image_cleanup(conn, &id))
+                .await
+            {
+                Ok(_) => {}
+                Err(error) => eprintln!(
+                    "Backend failure: cannot finish image cleanup for {}: {}",
+                    fenced.id, error.message
+                ),
+            }
+        }
+    }
+}
+
 pub async fn run(config: Config) -> Result<(), String> {
     let state = prepare(&config)?;
+    // Abandoned uploads and detached objects are retried at every start.
+    sweep_image_objects(&state).await;
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
         .await
         .map_err(|error| format!("Cannot bind {}: {error}", config.bind_addr))?;

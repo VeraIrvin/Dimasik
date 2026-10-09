@@ -32,7 +32,8 @@ OPTIONS:
 
 ENVIRONMENT:
     DATABASE_PATH, DATA_DIR, IMPORT_DIR, PUBLIC_DATA_DIR, BIND_ADDR,
-    FRONTEND_ORIGIN, ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_SESSION_SECRET
+    FRONTEND_ORIGIN, ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_SESSION_SECRET,
+    S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
     (SESSION_SECRET is accepted as a fallback). Values are read from the process
     environment first, then from ./.env and ./.env.local relative to the current
     working directory.
@@ -64,6 +65,11 @@ pub struct Config {
     pub admin_username: Option<String>,
     pub admin_password: Option<String>,
     pub admin_session_secret: Option<String>,
+    pub s3_endpoint: Option<String>,
+    pub s3_region: Option<String>,
+    pub s3_bucket: Option<String>,
+    pub s3_access_key_id: Option<String>,
+    pub s3_secret_access_key: Option<String>,
     pub fresh_install: bool,
 }
 
@@ -99,6 +105,11 @@ impl Config {
         let admin_password = lookup("ADMIN_PASSWORD");
         let admin_session_secret =
             lookup("ADMIN_SESSION_SECRET").or_else(|| lookup("SESSION_SECRET"));
+        let s3_endpoint = lookup("S3_ENDPOINT");
+        let s3_region = lookup("S3_REGION");
+        let s3_bucket = lookup("S3_BUCKET");
+        let s3_access_key_id = lookup("S3_ACCESS_KEY_ID");
+        let s3_secret_access_key = lookup("S3_SECRET_ACCESS_KEY");
 
         Self {
             database_path: PathBuf::from(database_path),
@@ -110,6 +121,11 @@ impl Config {
             admin_username,
             admin_password,
             admin_session_secret,
+            s3_endpoint,
+            s3_region,
+            s3_bucket,
+            s3_access_key_id,
+            s3_secret_access_key,
             fresh_install: args.fresh,
         }
     }

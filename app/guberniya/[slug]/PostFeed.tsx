@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import PostAdminControls from "./PostAdminControls";
 import PostBody from "./PostBody";
+import PostImageGallery from "./PostImageGallery";
 import styles from "./PostFeed.module.css";
 
 type Props = {
@@ -100,6 +101,7 @@ export default function PostFeed({
                   {post.archiveReference ? <><dt>Архивный шифр</dt><dd>{post.archiveReference}</dd></> : null}
                 </dl>
               ) : null}
+              <PostImageGallery images={post.images} />
               <PostBody body={post.body} />
             </article>
           );

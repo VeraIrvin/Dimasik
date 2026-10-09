@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use serde_json::{json, Map, Value};
@@ -7,15 +7,18 @@ use serde_json::{json, Map, Value};
 use crate::content::MAX_POST_DOCUMENT_JSON_CHARACTERS;
 use crate::error::{ApiError, ApiResult};
 use crate::http;
+use crate::s3::S3Storage;
 use crate::session;
 use crate::store;
-use crate::util::{now_unix, utf16_len};
+use crate::util::{now_unix, random_id, utf16_len};
 use crate::AppState;
 
 /// `MAX_POST_REQUEST_BYTES = MAX_POST_DOCUMENT_JSON_CHARACTERS * 3 + 2_000`,
 /// plus the 8 KiB placement-metadata margin from the post routes.
 const MAX_POST_REQUEST_BYTES: usize = MAX_POST_DOCUMENT_JSON_CHARACTERS * 3 + 2_000;
 const POST_REQUEST_BYTES: usize = MAX_POST_REQUEST_BYTES + 8_192;
+/// One image upload plus the multipart envelope around it.
+pub const MAX_UPLOAD_REQUEST_BYTES: usize = crate::s3::MAX_UPLOAD_BYTES + 64 * 1024;
 /// Province PATCH carries a rich description document plus the slug, so it
 /// keeps the same document bound as the post routes.
 const GUBERNIA_REQUEST_BYTES: usize = MAX_POST_REQUEST_BYTES + 1_024;
@@ -109,6 +112,9 @@ pub async fn gubernia_delete(
     state
         .call(move |conn| store::unpublish_gubernia(conn, &canonical, &id))
         .await?;
+    // Unpublishing deletes the province posts, so their image objects need the
+    // same background cleanup as a direct post deletion.
+    spawn_image_sweep(&state);
     Ok(http::empty_response(StatusCode::NO_CONTENT))
 }
 
@@ -140,9 +146,14 @@ pub async fn post_update(
     http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
     let payload = http::read_json_object(&headers, body, Some(POST_REQUEST_BYTES)).await?;
     let canonical = state.canonical.clone();
-    let value = state
+    let (value, detached_images) = state
         .call(move |conn| store::update_post(conn, &canonical, &id, &post_id, &payload))
         .await?;
+    // A save that dropped images detached them in the same transaction; their
+    // storage objects are deleted in the background, like after a deletion.
+    if detached_images {
+        spawn_image_sweep(&state);
+    }
     Ok(http::json_response(StatusCode::OK, value))
 }
 
@@ -156,6 +167,236 @@ pub async fn post_delete(
     state
         .call(move |conn| store::delete_post(conn, &canonical, &id, &post_id))
         .await?;
+    // The post rows of its images are gone now; deleting the objects happens
+    // in the background so the response does not wait for storage.
+    spawn_image_sweep(&state);
+    Ok(http::empty_response(StatusCode::NO_CONTENT))
+}
+
+// ---------------------------------------------------------------------------
+// Browser API: post images
+// ---------------------------------------------------------------------------
+
+/// Kicks off [`crate::sweep_image_objects`] without waiting for it.
+fn spawn_image_sweep(state: &AppState) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        crate::sweep_image_objects(&state).await;
+    });
+}
+
+/// Reads the single `file` multipart field. The route body cap already bounds
+/// the envelope; the storage layer validates the decoded image itself.
+async fn read_upload_file(multipart: &mut Multipart) -> ApiResult<axum::body::Bytes> {
+    let mut file: Option<axum::body::Bytes> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ApiError::bad_request("Не удалось прочитать загрузку."))?
+    {
+        if field.name() != Some("file") || file.is_some() {
+            return Err(ApiError::bad_request(
+                "Загрузка должна содержать ровно одно поле «file».",
+            ));
+        }
+        file = Some(
+            field
+                .bytes()
+                .await
+                .map_err(|_| ApiError::bad_request("Не удалось прочитать файл."))?,
+        );
+    }
+    file.ok_or_else(|| ApiError::bad_request("Загрузка должна содержать ровно одно поле «file»."))
+}
+
+/// Keeps a failed upload tracked: the durable cleanup row is written first,
+/// then the objects are deleted. Both deterministic objects gone means the
+/// row can be dropped right away instead of waiting for the next sweep; if the
+/// deletion or the final database step fails, the row stays behind with its
+/// persisted keys and the sweep retries from them.
+async fn fail_image_upload(state: &AppState, storage: &S3Storage, id: &str) {
+    let requested = id.to_string();
+    let row = match state
+        .call(move |conn| store::mark_upload_failed(conn, &requested))
+        .await
+    {
+        Ok(row) => row,
+        Err(error) => {
+            eprintln!(
+                "Backend failure: cannot record the failed upload {id}: {}",
+                error.message
+            );
+            return;
+        }
+    };
+    let Some(row) = row else {
+        return;
+    };
+    if let Err(error) = storage
+        .delete_image(&row.original_key, &row.thumbnail_key)
+        .await
+    {
+        eprintln!(
+            "Backend failure: cannot delete the objects of the failed upload {}: {}",
+            row.id, error.message
+        );
+        // The row keeps the deterministic keys: the sweep retries them.
+        return;
+    }
+    let id = row.id.clone();
+    if let Err(error) = state
+        .call(move |conn| store::finish_image_cleanup(conn, &id))
+        .await
+    {
+        eprintln!(
+            "Backend failure: cannot drop the row of the failed upload {}: {}",
+            row.id, error.message
+        );
+    }
+}
+
+pub async fn post_image_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> ApiResult<Response> {
+    http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
+    let Some(storage) = state.image_storage.clone() else {
+        return Err(S3Storage::unavailable());
+    };
+    let bytes = read_upload_file(&mut multipart).await?;
+    let id = random_id();
+    // The provisional row is written before any storage call, so every later
+    // failure has a durable record of the deterministic keys.
+    {
+        let id = id.clone();
+        state
+            .call(move |conn| store::begin_image_upload(conn, &id))
+            .await?;
+    }
+    let stored = match storage.put_image(&id, bytes).await {
+        Ok(stored) => stored,
+        Err(error) => {
+            fail_image_upload(&state, &storage, &id).await;
+            return Err(error);
+        }
+    };
+    let completed = {
+        let id = id.clone();
+        let original_key = stored.original_key.clone();
+        let thumbnail_key = stored.thumbnail_key.clone();
+        let width = i64::from(stored.width);
+        let height = i64::from(stored.height);
+        state
+            .call(move |conn| {
+                store::complete_image_upload(conn, &id, &original_key, &thumbnail_key, width, height)
+            })
+            .await
+    };
+    let row = match completed {
+        Ok(row) => row,
+        Err(error) => {
+            // Both objects exist but the row could not be completed — the
+            // sweep fenced the abandoned provisional row (or it is gone):
+            // roll the objects back now; a failed rollback leaves the
+            // cleanup record for the sweep.
+            fail_image_upload(&state, &storage, &id).await;
+            return Err(error);
+        }
+    };
+    spawn_image_sweep(&state);
+    Ok(http::json_response(StatusCode::CREATED, store::image_value(&row)))
+}
+
+pub async fn post_image_get(
+    State(state): State<AppState>,
+    Path((id, variant)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    if variant != "original" && variant != "thumbnail" {
+        return Err(ApiError::not_found("Изображение не найдено."));
+    }
+    let access = {
+        let id = id.clone();
+        state
+            .call(move |conn| store::load_image_access(conn, &id))
+            .await?
+    };
+    let Some(access) = access else {
+        return Err(ApiError::not_found("Изображение не найдено."));
+    };
+    if access.image.post_id.is_some() {
+        // Attached images follow their province: only published provinces are
+        // publicly readable, everything else stays invisible.
+        if !access.published {
+            return Err(ApiError::not_found("Изображение не найдено."));
+        }
+    } else {
+        // Pending uploads are admin-only and only while still claimable;
+        // cancelled or expired rows are cleanup matter.
+        if !store::is_fresh_pending(&access.image, now_unix() * 1_000) {
+            return Err(ApiError::not_found("Изображение не найдено."));
+        }
+        http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
+    }
+    let Some(storage) = state.image_storage.clone() else {
+        return Err(S3Storage::unavailable());
+    };
+    let key = if variant == "thumbnail" {
+        &access.image.thumbnail_key
+    } else {
+        &access.image.original_key
+    };
+    let url = storage.presign_get(key).await?;
+    let mut response = http::empty_response(StatusCode::FOUND);
+    let location = HeaderValue::from_str(&url).map_err(ApiError::internal)?;
+    response.headers_mut().insert(header::LOCATION, location);
+    Ok(response)
+}
+
+pub async fn post_image_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
+    let access = {
+        let id = id.clone();
+        state
+            .call(move |conn| store::load_image_access(conn, &id))
+            .await?
+    };
+    let Some(access) = access else {
+        return Err(ApiError::not_found("Изображение не найдено."));
+    };
+    if access.image.post_id.is_some() {
+        return Err(ApiError::conflict("Изображение уже привязано к публикации."));
+    }
+    let Some(storage) = state.image_storage.clone() else {
+        // Without storage the objects cannot be deleted; the row must stay so
+        // the keys keep pointing at them (uploads are unavailable anyway).
+        return Err(S3Storage::unavailable());
+    };
+    let now_ms = now_unix() * 1_000;
+    let image = {
+        let id = id.clone();
+        state
+            .call(move |conn| store::take_image_for_cleanup(conn, &id, now_ms))
+            .await?
+    };
+    let Some(image) = image else {
+        return Err(ApiError::not_found("Изображение не найдено."));
+    };
+    // Objects first, row second: a storage error keeps the row (marked, with
+    // its keys) so the sweep retries instead of leaking the objects.
+    storage
+        .delete_image(&image.original_key, &image.thumbnail_key)
+        .await?;
+    let id = image.id.clone();
+    state
+        .call(move |conn| store::finish_image_cleanup(conn, &id))
+        .await?;
+    spawn_image_sweep(&state);
     Ok(http::empty_response(StatusCode::NO_CONTENT))
 }
 

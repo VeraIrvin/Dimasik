@@ -291,6 +291,13 @@ pub fn base_config(dir: &Path) -> Config {
         admin_username: Some("admin".to_string()),
         admin_password: Some("secret".to_string()),
         admin_session_secret: Some("0123456789abcdef0123456789abcdef".to_string()),
+        // Image storage stays unconfigured: uploads answer 503 and the image
+        // lifecycle tests exercise the database side directly.
+        s3_endpoint: None,
+        s3_region: None,
+        s3_bucket: None,
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
         fresh_install: false,
     }
 }

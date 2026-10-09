@@ -205,6 +205,9 @@ fn import_prepared(
 }
 
 fn clear_mutable_state(transaction: &Transaction) -> Result<(), String> {
+    // post_images rows are deliberately absent from this wipe: their storage
+    // objects only disappear once the cleanup sweep confirms the deletion from
+    // the persisted keys, so deleting the rows here would leak the objects.
     transaction
         .execute_batch(
             "DELETE FROM posts;\n\

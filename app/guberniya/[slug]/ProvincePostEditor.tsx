@@ -16,6 +16,7 @@ import RichTextField, {
 } from "@/components/RichTextField";
 import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import { useDistrictOptions } from "./useDistrictOptions";
+import PostImageUploader, { type PostImageUploaderHandle } from "./PostImageUploader";
 import styles from "./ProvincePostEditor.module.css";
 
 const TITLE_MAX_LENGTH = 1000;
@@ -82,10 +83,13 @@ export default function ProvincePostEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  /** True while the post's images are uploading or one of them failed. */
+  const [imagesBlocked, setImagesBlocked] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const categoryRef = useRef<HTMLSelectElement>(null);
   const provinceRef = useRef<HTMLSelectElement>(null);
   const richTextFieldRef = useRef<RichTextFieldHandle>(null);
+  const imageUploaderRef = useRef<PostImageUploaderHandle>(null);
 
   const { districts, loading: districtsLoading, error: districtsError } =
     useDistrictOptions(selectedProvinceId);
@@ -145,6 +149,10 @@ export default function ProvincePostEditor({
     setError("");
     setStatus("");
     if (richTextFieldRef.current?.isLinkFieldOpen()) richTextFieldRef.current.closeLinkField();
+    // Cancel discards only the new pending uploads; saved images are untouched
+    // and staged removals are dropped without being applied.
+    imageUploaderRef.current?.cleanupPending();
+    imageUploaderRef.current?.reset();
     if (isEditing) {
       // The parent owns the editor in edit mode; it closes it on this signal.
       onDone?.();
@@ -168,6 +176,14 @@ export default function ProvincePostEditor({
 
   async function save() {
     if (!editor || saving) return;
+    const imageUploader = imageUploaderRef.current;
+    if (imageUploader?.isBlocked()) {
+      setStatus("");
+      setError("Дождитесь завершения загрузки изображений или удалите файлы с ошибкой.");
+      return;
+    }
+    // The final set covers both modes: kept saved images plus new uploads.
+    const imageIds = imageUploader?.getImageIds() ?? [];
     const nextTitle = title.trim();
     if (!nextTitle) {
       setStatus("");
@@ -175,9 +191,9 @@ export default function ProvincePostEditor({
       titleRef.current?.focus();
       return;
     }
-    if (!editor.getText().trim()) {
+    if (!editor.getText().trim() && imageIds.length === 0) {
       setStatus("");
-      setError("Добавьте текст сообщения.");
+      setError("Добавьте текст сообщения или хотя бы одно изображение.");
       editor.chain().focus().run();
       return;
     }
@@ -212,6 +228,9 @@ export default function ProvincePostEditor({
     setSaving(true);
     setError("");
     setStatus("");
+    // Until the save response lands, new uploads may already be claimed by the
+    // request; while this is set, cleanup leaves them to the server TTL sweep.
+    imageUploader?.setSaveInFlight(true);
     try {
       const response = await fetch(
         postId
@@ -229,7 +248,10 @@ export default function ProvincePostEditor({
             settlementId: selectedSettlementId || null,
             year: year.trim(),
             archiveReference: archiveReference.trim(),
+            // The ordered final set is sent every time; an edit that only moved
+            // the post still keeps its images. targetGuberniaId is PATCH-only.
             ...(postId ? { targetGuberniaId: selectedProvinceId } : {}),
+            imageIds,
           }),
         },
       );
@@ -244,6 +266,9 @@ export default function ProvincePostEditor({
         );
         return;
       }
+
+      // The stored post now owns the new uploads: never clean them up as pending.
+      imageUploaderRef.current?.claimAll();
 
       if (selectedProvinceId !== guberniaId && targetSlug) {
         // The post now lives on another province page: follow it there.
@@ -263,6 +288,7 @@ export default function ProvincePostEditor({
         setYear("");
         setArchiveReference("");
         editor.commands.clearContent();
+        imageUploaderRef.current?.reset();
         setStatus("Сообщение опубликовано.");
         titleRef.current?.focus();
       }
@@ -270,6 +296,9 @@ export default function ProvincePostEditor({
     } catch {
       setError("Не удалось связаться с сервером.");
     } finally {
+      // A settled request no longer races cleanup: failed saves must fall back
+      // to normal pending deletion on cancel or unmount.
+      imageUploader?.setSaveInFlight(false);
       setSaving(false);
     }
   }
@@ -338,8 +367,17 @@ export default function ProvincePostEditor({
     </div>
   );
   const primaryAction = (
-    <button className={styles.primaryButton} type="submit" disabled={saving || !editor}>
+    <button
+      className={styles.primaryButton}
+      type="submit"
+      disabled={saving || !editor || imagesBlocked}
+    >
       {saving ? (isEditing ? "Сохраняем…" : "Отправляем…") : isEditing ? "Сохранить" : "Отправить"}
+    </button>
+  );
+  const cancelAction = (
+    <button className={styles.cancelButton} type="button" onClick={cancel} disabled={saving}>
+      Отмена
     </button>
   );
 
@@ -471,9 +509,7 @@ export default function ProvincePostEditor({
 
         <div className={styles.actions}>
           {primaryAction}
-          <button className={styles.cancelButton} type="button" onClick={cancel} disabled={saving}>
-            Отмена
-          </button>
+          {cancelAction}
         </div>
 
         <label htmlFor={titleId}>Заголовок сообщения</label>
@@ -497,11 +533,19 @@ export default function ProvincePostEditor({
         <RichTextField
           ref={richTextFieldRef}
           editor={editor}
-          hint="Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца."
+          hint="Текст необязателен, если к записи прикреплено изображение. Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца."
+        />
+
+        <PostImageUploader
+          ref={imageUploaderRef}
+          initialImages={post?.images}
+          disabled={saving}
+          onBlockedChange={setImagesBlocked}
         />
 
         <div className={styles.actions}>
           {primaryAction}
+          {cancelAction}
         </div>
       </form>
     </section>

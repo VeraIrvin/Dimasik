@@ -1,0 +1,131 @@
+.gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 24px;
+  padding: 0;
+  list-style: none;
+}
+
+.thumbnail {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #efece4;
+  overflow: hidden;
+  cursor: zoom-in;
+  line-height: 0;
+}
+
+.thumbnail:hover,
+.thumbnail:focus-visible {
+  border-color: #b7b0a1;
+}
+
+.thumbnailImage {
+  display: block;
+  width: auto;
+  height: 108px;
+  max-width: 200px;
+  object-fit: contain;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(12px, 3vw, 32px);
+  background: rgba(30, 29, 26, 0.78);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.dialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  align-self: stretch;
+}
+
+.counter {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: rgba(242, 239, 232, 0.72);
+}
+
+.closeButton,
+.navButton {
+  border: 1px solid rgba(242, 239, 232, 0.4);
+  border-radius: 4px;
+  background: rgba(39, 38, 34, 0.55);
+  color: #f2efe8;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.closeButton:hover,
+.navButton:hover {
+  background: rgba(39, 38, 34, 0.85);
+}
+
+.closeButton:focus-visible,
+.navButton:focus-visible {
+  outline: 2px solid #f2efe8;
+  outline-offset: 3px;
+}
+
+.viewport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+}
+
+.fullImage {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(100dvh - 220px);
+  object-fit: contain;
+}
+
+.navigation {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+@media (max-width: 700px) {
+  .thumbnailImage {
+    height: 84px;
+    max-width: 150px;
+  }
+
+  .closeButton,
+  .navButton {
+    padding: 6px 12px;
+  }
+
+  .fullImage {
+    max-height: calc(100dvh - 200px);
+  }
+}

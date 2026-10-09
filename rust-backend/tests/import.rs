@@ -352,7 +352,7 @@ async fn concurrent_bootstrap_processes_import_exactly_once() {
     let migrations: i64 = connection
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(migrations, 3, "each migration is recorded once");
+    assert_eq!(migrations, 4, "each migration is recorded once");
 }
 
 #[test]
@@ -392,7 +392,16 @@ fn migration_converts_plain_text_province_descriptions_once() {
         let rows = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
         rows.map(|row| row.unwrap()).collect()
     };
-    assert_eq!(versions, vec![1, 2, 3]);
+    assert_eq!(versions, vec![1, 2, 3, 4]);
+    // Migration 4 adds the image table even to an upgraded legacy database.
+    let image_table: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'post_images'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(image_table, 1, "migration 4 creates post_images");
 
     let columns: Vec<String> = {
         let mut statement = connection.prepare("PRAGMA table_info(provinces)").unwrap();
@@ -460,7 +469,7 @@ fn migration_converts_plain_text_province_descriptions_once() {
         let rows = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
         rows.map(|row| row.unwrap()).collect()
     };
-    assert_eq!(versions_again, vec![1, 2, 3]);
+    assert_eq!(versions_again, vec![1, 2, 3, 4]);
     let converted_again: String = connection
         .query_row(
             "SELECT description_json FROM provinces WHERE id = 'ryazan'",
@@ -717,6 +726,12 @@ async fn real_repository_data_imports_faithfully() {
         admin_username: Some("admin".to_string()),
         admin_password: Some("secret".to_string()),
         admin_session_secret: Some("0123456789abcdef0123456789abcdef".to_string()),
+        // The live-data fixture test does not touch image uploads.
+        s3_endpoint: None,
+        s3_region: None,
+        s3_bucket: None,
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
         fresh_install: false,
     };
     let state = prepare(&config).expect("real data imports");
@@ -927,7 +942,7 @@ async fn fixture_publication_state_imports_every_canonical_entry() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(migration_version, 3);
+    assert_eq!(migration_version, 4);
 
     // The district registry mirrors the canonical district files: all 76
     // provinces ship a file in the fixture (ryazan has two districts).

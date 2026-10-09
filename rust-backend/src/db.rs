@@ -19,6 +19,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (1, Migration::Sql(include_str!("../migrations/0001_init.sql"))),
     (2, Migration::Sql(include_str!("../migrations/0002_districts.sql"))),
     (3, Migration::Convert(migrate_province_descriptions)),
+    (4, Migration::Sql(include_str!("../migrations/0004_post_images.sql"))),
 ];
 
 /// Version 3: `provinces.description` holds a canonical rich document, so the

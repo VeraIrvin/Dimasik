@@ -1,0 +1,157 @@
+.uploader {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid #e4e1d9;
+}
+
+.uploadLabel {
+  font-size: 12px;
+  color: #55514a;
+}
+
+.fileInput {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px dashed #c9c7c0;
+  border-radius: 3px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+.fileInput:focus-visible {
+  border-color: #6f5a2b;
+}
+
+.fileInput:disabled {
+  background: #f4f2ec;
+  color: #8a867e;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted, #75736c);
+}
+
+.error {
+  margin: 0;
+  color: #8d3c32;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.status {
+  margin: 0;
+  color: #5c6b47;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.list {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid #e4e1d9;
+  border-radius: 3px;
+  background: #fff;
+}
+
+.preview {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 2px;
+  background: #f4f2ec;
+}
+
+.itemBody {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itemName {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.itemState {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, #75736c);
+}
+
+.itemError {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #8d3c32;
+  overflow-wrap: anywhere;
+}
+
+.progressTrack {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: #e4e1d9;
+  overflow: hidden;
+}
+
+.progressFill {
+  display: block;
+  height: 100%;
+  background: #6f5a2b;
+  transition: width 120ms linear;
+}
+
+.removeButton {
+  padding: 6px 8px;
+  border: 1px solid #c9c7c0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.removeButton:hover:enabled {
+  background: #f3efe6;
+}
+
+.removeButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+@media (max-width: 640px) {
+  .item {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .preview {
+    width: 56px;
+    height: 56px;
+  }
+
+  .removeButton {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}

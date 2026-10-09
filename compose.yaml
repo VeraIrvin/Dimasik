@@ -4,7 +4,9 @@
 #
 # Only Traefik publishes host ports (80/443). The backend has no host port and
 # lives on the private `internal` network; it is reachable only from frontend.
-# Always run exactly ONE backend replica: a single SQLite writer owns the
+# The backend additionally joins the dedicated `egress` bridge (backend only)
+# so it can reach S3-compatible object storage outbound; nothing is published
+# there. Always run exactly ONE backend replica: a single SQLite writer owns the
 # `dimasik-data` volume (never use `--scale backend=2`).
 
 name: dimasik
@@ -112,12 +114,26 @@ services:
       ADMIN_USERNAME: "${ADMIN_USERNAME:?Set ADMIN_USERNAME in .env.compose}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env.compose}"
       ADMIN_SESSION_SECRET: "${ADMIN_SESSION_SECRET:?Set ADMIN_SESSION_SECRET in .env.compose (at least 32 characters)}"
+      # Optional S3-compatible object storage for post images (Selectel).
+      # Leave the whole group absent/empty to run without images: upload
+      # endpoints answer 503 and posts work without image attachments. Set all
+      # five together to enable uploads. Runtime-only secrets: these are never
+      # image build args, and the backend reaches S3 through `egress` below.
+      S3_ENDPOINT: "${S3_ENDPOINT:-}"
+      S3_REGION: "${S3_REGION:-}"
+      S3_BUCKET: "${S3_BUCKET:-}"
+      S3_ACCESS_KEY_ID: "${S3_ACCESS_KEY_ID:-}"
+      S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY:-}"
     volumes:
       - dimasik-data:/var/lib/dimasik
     expose:
       - "8787"
     networks:
       - internal
+      # Backend-only outbound bridge for S3-compatible object storage. No
+      # other service joins it, so browsers cannot reach the backend here and
+      # the private `internal` bridge keeps its `internal: true` isolation.
+      - egress
     security_opt:
       - no-new-privileges:true
     # Explicit intent: one writer per SQLite file.
@@ -131,8 +147,14 @@ networks:
     name: dimasik_web
   internal:
     name: dimasik_internal
-    # No route off the host: the backend has no internet access.
+    # No route off the host: frontend<->backend traffic cannot reach the
+    # internet from here. Backend S3 egress uses `egress` below instead.
     internal: true
+  # Backend-only outbound bridge (ordinary bridge with NAT): gives the backend
+  # a route to S3-compatible object storage without publishing any port. No
+  # other service joins it, so the browser-facing surface stays isolated.
+  egress:
+    name: dimasik_egress
 
 volumes:
   # Mutable state: dimasik.sqlite plus its -wal/-shm sidecars. Never delete this

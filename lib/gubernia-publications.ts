@@ -23,6 +23,17 @@ export type Settlement = {
   type: string | null;
 };
 
+/** An image attached to a post: dimensions plus same-origin API URLs. */
+export type PostImage = {
+  id: string;
+  width: number;
+  height: number;
+  /** `/api/post-images/{id}/original`; resolves to a short-lived signed redirect. */
+  originalUrl: string;
+  /** `/api/post-images/{id}/thumbnail`; same lifetime as the original. */
+  thumbnailUrl: string;
+};
+
 export type GuberniaPost = {
   id: string;
   title: string;
@@ -35,6 +46,8 @@ export type GuberniaPost = {
   archiveReference: string;
   /** Posts stored before categories existed stay null until an edit picks one. */
   category: PostCategory | null;
+  /** Attached images in display order; always an array, empty when there are none. */
+  images: PostImage[];
 };
 
 export type PublishedGubernia = {

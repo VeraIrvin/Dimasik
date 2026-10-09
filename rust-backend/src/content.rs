@@ -10,7 +10,7 @@ const MAX_DOCUMENT_TEXT: usize = 100_000;
 const MAX_LINK_HREF_LENGTH: usize = 2_048;
 const MAX_LINK_TITLE_LENGTH: usize = 512;
 
-const EMPTY_DOCUMENT_MESSAGE: &str = "Текст публикации не должен быть пустым.";
+pub(crate) const EMPTY_DOCUMENT_MESSAGE: &str = "Текст публикации не должен быть пустым.";
 const INVALID_DOCUMENT_MESSAGE: &str = "Некорректное содержимое публикации.";
 
 #[derive(Debug)]
