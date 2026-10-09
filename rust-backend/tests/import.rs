@@ -690,6 +690,8 @@ async fn real_repository_data_imports_faithfully() {
         s3_bucket: None,
         s3_access_key_id: None,
         s3_secret_access_key: None,
+        yandex_metrika_oauth_token: None,
+        yandex_metrika_counter_id: None,
         fresh_install: false,
     };
     let state = prepare(&config).expect("real data imports");

@@ -5,6 +5,7 @@ pub mod error;
 pub mod geo;
 pub mod http;
 pub mod import;
+pub mod metrika;
 pub mod routes;
 pub mod s3;
 pub mod session;
@@ -21,6 +22,7 @@ use crate::config::Config;
 use crate::error::{ApiError, ApiResult};
 use crate::geo::{CanonicalProvinces, GeoRuntime};
 use crate::s3::S3Storage;
+use crate::metrika::TrafficRuntime;
 use crate::session::AuthConfig;
 use crate::util::now_unix;
 
@@ -37,6 +39,7 @@ pub struct AppState {
     /// `None` when the S3_* variables are unset: uploads answer 503 and the
     /// rest of the API keeps working.
     pub image_storage: Option<Arc<S3Storage>>,
+    pub metrika: Arc<TrafficRuntime>,
 }
 
 impl AppState {
@@ -103,6 +106,7 @@ pub fn prepare(config: &Config) -> Result<AppState, String> {
     // Unconfigured storage is not an error (empty posts must keep working);
     // partial or invalid S3_* configuration logs the reason and disables it.
     let image_storage = S3Storage::setup(config).map(Arc::new);
+    let metrika = Arc::new(TrafficRuntime::new(config)?);
     Ok(AppState {
         connection: Arc::new(Mutex::new(connection)),
         auth,
@@ -110,6 +114,7 @@ pub fn prepare(config: &Config) -> Result<AppState, String> {
         canonical,
         geo,
         image_storage,
+        metrika,
     })
 }
 
@@ -175,6 +180,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/internal/about", get(routes::internal_about))
         .route("/internal/settings", get(routes::internal_settings))
         .route("/internal/metrics", get(routes::internal_metrics))
+        .route("/api/metrika/traffic", get(metrika::traffic))
         .layer(axum::middleware::from_fn(http::no_store_middleware))
         .with_state(state)
 }

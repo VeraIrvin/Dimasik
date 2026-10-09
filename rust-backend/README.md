@@ -111,6 +111,7 @@ Browser API (same paths, methods, statuses and error envelopes
 | PATCH | `/api/about-content` |
 | POST, PATCH, DELETE | `/api/nastroyki` |
 | POST, DELETE | `/api/admin/session` |
+| GET | `/api/metrika/traffic` (administrator session required) |
 
 Every mutating route except `POST /api/admin/session` (login only checks
 credentials and sets the cookie) and `DELETE /api/admin/session` (which clears
@@ -118,6 +119,31 @@ it) requires the `dimasik_admin_session` cookie (HttpOnly, SameSite=Strict,
 eight hours) and an Origin that either equals `FRONTEND_ORIGIN` or matches the
 request host. Request bodies keep the original byte caps (posts 610,192 bytes,
 settlements 4,096, settings 2,048, content 602,000).
+
+Traffic reports use `GET /api/metrika/traffic?report=overview|daily|pages|sources|devices&period=today|7d|30d|custom`.
+Custom periods require inclusive ISO dates `from` and `to`; dates use Moscow time
+(`+03:00`). The handler checks the signed administrator session before checking
+configuration, cache, or Yandex; anonymous and forged-cookie reads answer 401,
+including when a report is already cached.
+
+Set `YANDEX_METRIKA_OAUTH_TOKEN` (scope `metrika:read`, counter read access) and
+`YANDEX_METRIKA_COUNTER_ID` in the ignored root `.env.metrika.local` and restart
+the backend. Only these two keys are loaded from that file, after `.env.local`;
+process environment wins, and an explicit empty process value disables a key.
+Compose v2.24+ injects the optional file only into the backend at runtime.
+Missing configuration answers 503; upstream failures answer 502/503 with
+`{error, code}`, never zero traffic. OAuth values and raw upstream error bodies
+are not returned to browsers or logged.
+
+Five report-specific queries use the Yandex Reporting API. Period visitors come
+from the ungrouped `ym:s:users` total, not the sum of daily visitors. Daily rows
+use `ym:s:date`; popular pages use the separate hit-family `ym:pv:URL` and
+`ym:pv:pageviews`. Successful normalized responses include the resolved period,
+fetch timestamp, sampling and lag metadata. They are cached as serialized bytes
+for ten minutes by report/date range, with per-key single-flight and a bounded
+256-entry cache. Errors are not cached as successful reports. The global
+`Cache-Control: no-store` middleware still protects the browser-facing response.
+
 
 Image endpoints (all `Cache-Control: no-store` like the rest):
 

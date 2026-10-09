@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getPublicationMetrics } from "@/lib/gubernia-publications";
+import TrafficPanel from "./TrafficPanel";
 import styles from "./page.module.css";
 
 export default async function MetricsPage() {
@@ -21,10 +22,12 @@ export default async function MetricsPage() {
           ← Вернуться к карте
         </Link>
         <h1 className="content-page__title">Метрики</h1>
-        <p className="content-page__text">
-          Показатели содержимого портала: опубликованные губернии и созданные в них материалы.
-          Статистика посещений здесь не собирается.
-        </p>
+        <TrafficPanel />
+        <section className={styles.contentBlock} aria-labelledby="metrics-content">
+          <h2 id="metrics-content">Содержимое портала</h2>
+          <p className="content-page__text">
+            Опубликованные губернии и созданные в них материалы.
+          </p>
 
         <dl className={styles.summary}>
           <div className={styles.summaryItem}>
@@ -87,6 +90,7 @@ export default async function MetricsPage() {
               ))}
             </ul>
           )}
+        </section>
         </section>
       </main>
     </>

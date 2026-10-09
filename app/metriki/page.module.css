@@ -2,6 +2,19 @@
   margin-top: 0;
 }
 
+.contentBlock {
+  margin-top: 60px;
+  padding-top: 32px;
+  border-top: 1px solid var(--line);
+}
+
+.contentBlock > h2 {
+  margin: 0 0 18px;
+  font-size: 26px;
+  font-weight: 450;
+  letter-spacing: -.03em;
+}
+
 .summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

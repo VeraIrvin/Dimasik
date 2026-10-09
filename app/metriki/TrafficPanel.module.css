@@ -1,0 +1,49 @@
+.panel { margin-top: 38px; min-width: 0; }
+.heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
+.heading h2 { margin: 0; font-size: 26px; font-weight: 450; letter-spacing: -.03em; }
+.panel button, .panel select, .panel input { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 2px; padding: 10px 12px; min-height: 42px; max-width: 100%; }
+.panel button { cursor: pointer; }
+.panel button:hover { border-color: var(--accent); }
+.panel button:disabled { cursor: wait; opacity: .6; }
+.note, .freshness { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.note { margin: 15px 0; }
+.freshness { margin: 14px 0 0; font-size: 12px; }
+.controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; margin: 25px 0; }
+.field { display: flex; flex-direction: column; gap: 8px; font-size: 12px; letter-spacing: .04em; min-width: 0; }
+.field select { min-width: 180px; }
+.customDates { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
+.period { font-size: 14px; color: var(--muted); margin: 24px 0; }
+.report { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--line); min-width: 0; }
+.report h3 { margin: 0 0 20px; font-size: 16px; font-weight: 500; }
+.error { padding: 16px; border: 1px solid #bcada0; background: #eee8df; color: #6b392e; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.error p { margin: 0 0 12px; }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 0; }
+.cards dt { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.cards dd { margin: 12px 0 0; font-size: clamp(27px, 5vw, 42px); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.cardNote { display: block; font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 8px; letter-spacing: 0; }
+.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { font-family: inherit; font-size: 12px; fill: var(--muted); }
+.gridLine { stroke: var(--line); stroke-width: 1; }
+.graphLine { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.graphPoint { fill: var(--accent); }
+.dailyTable { margin-top: 18px; }
+.dailyTable summary { cursor: pointer; font-size: 13px; color: var(--accent); }
+.tableWrap { max-width: 100%; overflow-x: auto; }
+.tableWrap table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.5; }
+.tableWrap caption { text-align: left; color: var(--muted); padding-bottom: 12px; font-size: 12px; }
+.tableWrap th, .tableWrap td { text-align: right; padding: 12px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.tableWrap th:first-child { text-align: left; overflow-wrap: anywhere; }
+.tableWrap thead th { font-size: 11px; font-weight: 500; color: var(--muted); }
+.tableWrap tbody th { font-weight: 400; max-width: 400px; }
+.tableWrap td { white-space: nowrap; }
+.tableWrap a { text-underline-offset: 3px; }
+@media (max-width: 520px) {
+  .cards { gap: 12px; }
+  .cards dt { font-size: 9px; letter-spacing: .03em; }
+  .cards dd { font-size: 27px; }
+  .controls, .customDates { width: 100%; }
+  .field { flex: 1 1 130px; }
+  .field select { min-width: 0; width: 100%; }
+  .customDates button { width: 100%; }
+  .tableWrap th, .tableWrap td { padding: 10px 6px; }
+}

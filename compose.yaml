@@ -90,6 +90,10 @@ services:
       context: .
       target: backend
     restart: unless-stopped
+    # Optional reporting credentials are injected only at backend runtime.
+    env_file:
+      - path: .env.metrika.local
+        required: false
     environment:
       # The backend defaults to 127.0.0.1; inside the container it must listen
       # on all interfaces so the frontend container can reach it on 8787.
@@ -130,7 +134,7 @@ services:
       - "8787"
     networks:
       - internal
-      # Backend-only outbound bridge for S3-compatible object storage. No
+      # Backend-only outbound bridge for S3 and Yandex Metrika reports. No
       # other service joins it, so browsers cannot reach the backend here and
       # the private `internal` bridge keeps its `internal: true` isolation.
       - egress
@@ -148,10 +152,10 @@ networks:
   internal:
     name: dimasik_internal
     # No route off the host: frontend<->backend traffic cannot reach the
-    # internet from here. Backend S3 egress uses `egress` below instead.
+    # internet from here. Backend S3/Yandex egress uses `egress` below instead.
     internal: true
   # Backend-only outbound bridge (ordinary bridge with NAT): gives the backend
-  # a route to S3-compatible object storage without publishing any port. No
+  # a route to S3 and Yandex Metrika without publishing any port. No
   # other service joins it, so the browser-facing surface stays isolated.
   egress:
     name: dimasik_egress

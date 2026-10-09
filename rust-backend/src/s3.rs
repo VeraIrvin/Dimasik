@@ -609,6 +609,8 @@ mod tests {
             s3_bucket: s3_bucket.map(str::to_string),
             s3_access_key_id: s3_access_key_id.map(str::to_string),
             s3_secret_access_key: s3_secret_access_key.map(str::to_string),
+            yandex_metrika_oauth_token: None,
+            yandex_metrika_counter_id: None,
             fresh_install: true,
         }
     }

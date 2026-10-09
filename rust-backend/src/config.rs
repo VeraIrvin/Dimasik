@@ -33,10 +33,12 @@ OPTIONS:
 ENVIRONMENT:
     DATABASE_PATH, DATA_DIR, IMPORT_DIR, PUBLIC_DATA_DIR, BIND_ADDR,
     FRONTEND_ORIGIN, ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_SESSION_SECRET,
-    S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
+    S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY,
+    YANDEX_METRIKA_OAUTH_TOKEN, YANDEX_METRIKA_COUNTER_ID
     (SESSION_SECRET is accepted as a fallback). Values are read from the process
     environment first, then from ./.env and ./.env.local relative to the current
-    working directory.
+    working directory. ./.env.metrika.local is loaded last, but only for the two
+    Yandex Metrika variables. Empty process values disable Metrika configuration.
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +72,8 @@ pub struct Config {
     pub s3_bucket: Option<String>,
     pub s3_access_key_id: Option<String>,
     pub s3_secret_access_key: Option<String>,
+    pub yandex_metrika_oauth_token: Option<String>,
+    pub yandex_metrika_counter_id: Option<String>,
     pub fresh_install: bool,
 }
 
@@ -81,6 +85,13 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .or_else(|| file_env.get(key).cloned().filter(|value| !value.is_empty()))
         };
+        let lookup_yandex = |key: &str| -> Option<String> {
+            match std::env::var(key) {
+                Ok(value) => (!value.is_empty()).then_some(value),
+                Err(_) => file_env.get(key).cloned().filter(|value| !value.is_empty()),
+            }
+        };
+
 
         let data_dir = args
             .data_dir
@@ -110,6 +121,8 @@ impl Config {
         let s3_bucket = lookup("S3_BUCKET");
         let s3_access_key_id = lookup("S3_ACCESS_KEY_ID");
         let s3_secret_access_key = lookup("S3_SECRET_ACCESS_KEY");
+        let yandex_metrika_oauth_token = lookup_yandex("YANDEX_METRIKA_OAUTH_TOKEN");
+        let yandex_metrika_counter_id = lookup_yandex("YANDEX_METRIKA_COUNTER_ID");
 
         Self {
             database_path: PathBuf::from(database_path),
@@ -126,6 +139,8 @@ impl Config {
             s3_bucket,
             s3_access_key_id,
             s3_secret_access_key,
+            yandex_metrika_oauth_token,
+            yandex_metrika_counter_id,
             fresh_install: args.fresh,
         }
     }
@@ -193,14 +208,26 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     })
 }
 
-/// Loads `./.env` then `./.env.local` (the later file wins inside this map).
-/// Process environment always takes precedence when `Config::resolve` reads
-/// the values, so real deployments never depend on these files.
+/// Loads `./.env`, then `./.env.local`, then the two Yandex Metrika keys from
+/// `./.env.metrika.local` (later files win inside this map). Process environment
+/// always takes precedence when `Config::resolve` reads the values.
 pub fn load_env_files(cwd: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for name in [".env", ".env.local"] {
         if let Ok(contents) = std::fs::read_to_string(cwd.join(name)) {
             parse_env_contents(&contents, &mut map);
+        }
+    }
+    if let Ok(contents) = std::fs::read_to_string(cwd.join(".env.metrika.local")) {
+        let mut metrika_env = HashMap::new();
+        parse_env_contents(&contents, &mut metrika_env);
+        for key in [
+            "YANDEX_METRIKA_OAUTH_TOKEN",
+            "YANDEX_METRIKA_COUNTER_ID",
+        ] {
+            if let Some(value) = metrika_env.remove(key) {
+                map.insert(key.to_string(), value);
+            }
         }
     }
     map
@@ -290,6 +317,46 @@ mod tests {
         assert_eq!(map.get("ADMIN_PASSWORD").unwrap(), "p a#ss");
         assert_eq!(map.get("SESSION_SECRET").unwrap(), "s3cret");
         assert_eq!(map.get("EMPTY").unwrap(), "");
+    }
+
+    #[test]
+    fn metrika_env_file_overrides_only_metrika_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "YANDEX_METRIKA_OAUTH_TOKEN=base-token\n\
+             YANDEX_METRIKA_COUNTER_ID=base-counter\n\
+             ADMIN_USERNAME=base-admin\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".env.local"),
+            "YANDEX_METRIKA_OAUTH_TOKEN=local-token\n\
+             ADMIN_USERNAME=local-admin\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".env.metrika.local"),
+            "YANDEX_METRIKA_OAUTH_TOKEN=metrika-token\n\
+             YANDEX_METRIKA_COUNTER_ID=metrika-counter\n\
+             ADMIN_USERNAME=forbidden-admin\n",
+        )
+        .unwrap();
+
+        let env = load_env_files(dir.path());
+
+        assert_eq!(
+            env.get("YANDEX_METRIKA_OAUTH_TOKEN").map(String::as_str),
+            Some("metrika-token")
+        );
+        assert_eq!(
+            env.get("YANDEX_METRIKA_COUNTER_ID").map(String::as_str),
+            Some("metrika-counter")
+        );
+        assert_eq!(
+            env.get("ADMIN_USERNAME").map(String::as_str),
+            Some("local-admin")
+        );
     }
 
     #[test]
