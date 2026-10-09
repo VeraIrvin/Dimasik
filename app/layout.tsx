@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
+import YandexMetrika from "@/components/YandexMetrika";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 
@@ -12,7 +13,21 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru">
-      <body>{children}</body>
+      <body>
+        {children}
+        <Suspense fallback={null}>
+          <YandexMetrika />
+        </Suspense>
+        <noscript>
+          <div>
+            <img
+              src="https://mc.yandex.ru/watch/113584085"
+              style={{ position: "absolute", left: "-9999px" }}
+              alt=""
+            />
+          </div>
+        </noscript>
+      </body>
     </html>
   );
 }
