@@ -10,10 +10,15 @@ const FOCUSABLE_SELECTOR =
 
 type Props = {
   images: PostImage[];
+  /** Accessible name of the thumbnail strip; posts keep the original wording. */
+  ariaLabel?: string;
 };
 
-/** Post attachments: a thumbnail strip whose images open full size in a lightbox. */
-export default function PostImageGallery({ images }: Props) {
+/**
+ * Entity attachments (posts, provinces, settlement references): a thumbnail
+ * strip whose images open full size in a lightbox.
+ */
+export default function PostImageGallery({ images, ariaLabel = "Изображения сообщения" }: Props) {
   const count = images.length;
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -119,7 +124,7 @@ export default function PostImageGallery({ images }: Props) {
 
   return (
     <>
-      <ul className={styles.gallery} aria-label="Изображения сообщения">
+      <ul className={styles.gallery} aria-label={ariaLabel}>
         {images.map((image, index) => (
           <li key={image.id}>
             <button

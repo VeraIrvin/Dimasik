@@ -112,7 +112,8 @@ export default async function SettlementPage({
           </h2>
           <SettlementReferenceEditor
             slug={slug}
-            initialBody={reference}
+            initialBody={reference.body}
+            initialImages={reference.images}
             isAdmin={isAdmin}
             settlementId={settlement.id}
             guberniaId={gubernia.id}

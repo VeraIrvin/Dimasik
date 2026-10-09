@@ -20,7 +20,8 @@ pub const MAX_ID_LENGTH: usize = 100;
 pub const MAX_SETTLEMENT_NAME_LENGTH: usize = 200;
 pub const MAX_YEAR_LENGTH: usize = 100;
 pub const MAX_ARCHIVE_REFERENCE_LENGTH: usize = 300;
-/// At most ten uploaded images may be attached to one publication.
+/// At most ten uploaded images may be attached to one owner: a publication,
+/// a province description or a settlement reference block.
 pub const MAX_POST_IMAGES: usize = 10;
 /// Pending uploads older than this are withdrawn from claiming and deleted by
 /// the cleanup sweep (storage objects first, row last).
@@ -514,10 +515,14 @@ pub fn settlement_is_published(
     Ok(found.is_some())
 }
 
+/// Reads one settlement reference block as `(body, images)`. An image-only
+/// block stores the canonical empty document, which the strict normaliser
+/// reports as empty; every other stored document must still pass the
+/// whitelist.
 pub fn get_settlement_reference(
     connection: &Connection,
     settlement_id: &str,
-) -> ApiResult<Option<Value>> {
+) -> ApiResult<Option<(Value, Vec<PostImageRow>)>> {
     if !is_valid_settlement_id(settlement_id) {
         return Ok(None);
     }
@@ -536,30 +541,73 @@ pub fn get_settlement_reference(
             "Settlement reference storage contains an invalid document: {error}"
         ))
     })?;
-    normalize_post_document(&value)
-        .map(Some)
-        .map_err(|_| {
-            ApiError::internal("Settlement reference storage contains an invalid document.")
-        })
+    let body = match normalize_post_document(&value) {
+        Ok(document) => document,
+        Err(ContentError(message)) if message == EMPTY_DOCUMENT_MESSAGE => {
+            plain_text_to_document("")
+        }
+        Err(_) => {
+            return Err(ApiError::internal(
+                "Settlement reference storage contains an invalid document.",
+            ))
+        }
+    };
+    let images = load_owner_images(connection, ImageOwner::Settlement, settlement_id)?;
+    Ok(Some((body, images)))
 }
 
+/// Saves a settlement reference block: the body and, when `imageIds` is
+/// present, the full ordered attachment set change in one transaction, so a
+/// failed claim never leaves a partial body or a half-attached gallery. An
+/// absent field keeps the stored images; a structurally empty document is
+/// valid exactly while the saved block keeps at least one image (the same
+/// images-only rule posts use), so body-only callers keep the previous
+/// behaviour and an empty text without photos stays rejected.
+///
+/// Returns the stored body, the saved images in order, and whether the save
+/// detached persisted images, i.e. whether the storage sweep has to run after
+/// the commit.
 pub fn save_settlement_reference(
-    connection: &Connection,
+    connection: &mut Connection,
     settlement_id: &str,
     value: &Value,
-) -> ApiResult<Value> {
+    image_ids: Option<&Value>,
+) -> ApiResult<(Value, Vec<PostImageRow>, bool)> {
     if !is_valid_settlement_id(settlement_id) {
         return Err(ApiError::internal(
             "Settlement reference storage received an invalid settlement id.",
         ));
     }
-    let body = validate_post_body(value)?;
-    connection.execute(
+    let body = validate_optional_post_body(value)?;
+    let replacement = validate_optional_image_ids(image_ids)?;
+    let now_ms = now_unix() * 1_000;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current = load_owner_images(&transaction, ImageOwner::Settlement, settlement_id)?;
+    let (images, detached) = match &replacement {
+        Some(image_ids) => {
+            let detached = replace_images(
+                &transaction,
+                ImageOwner::Settlement,
+                settlement_id,
+                image_ids,
+                &current,
+                now_ms,
+            )?;
+            (
+                load_owner_images(&transaction, ImageOwner::Settlement, settlement_id)?,
+                detached,
+            )
+        }
+        None => (current, false),
+    };
+    let body = resolve_post_body(body, !images.is_empty())?;
+    transaction.execute(
         "INSERT INTO settlement_references (settlement_id, body_json) VALUES (?1, ?2)\n\
          ON CONFLICT(settlement_id) DO UPDATE SET body_json = excluded.body_json",
         params![settlement_id, serde_json::to_string(&body)?],
     )?;
-    Ok(body)
+    transaction.commit()?;
+    Ok((body, images, detached))
 }
 
 pub fn remove_settlement_reference(
@@ -718,10 +766,14 @@ fn load_settlement(
         .map_err(ApiError::from)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PostImageRow {
     pub id: String,
+    /// Exactly one of the three owner columns is set while the image is
+    /// attached to a post, a province or a settlement reference.
     pub post_id: Option<String>,
+    pub province_id: Option<String>,
+    pub settlement_id: Option<String>,
     pub original_key: String,
     pub thumbnail_key: String,
     pub width: i64,
@@ -733,9 +785,24 @@ pub struct PostImageRow {
     /// `0` = provisional row written before the storage PUTs; a negative
     /// marker = the cleanup sweep has fenced the row (it can no longer be
     /// completed, claimed or cancelled); a positive timestamp = claimed-at
-    /// and, once `post_id` is NULL again, the durable marker that the storage
-    /// objects still need deleting.
+    /// and, once every owner column is NULL again, the durable marker that
+    /// the storage objects still need deleting.
     pub attached_ms: Option<i64>,
+}
+
+impl PostImageRow {
+    /// True while no owner column references the row: pending uploads,
+    /// provisional rows and detached or fenced cleanup matter. An
+    /// entity-owned image must never be claimed, cancelled or swept as if it
+    /// were unattached.
+    pub fn is_unowned(&self) -> bool {
+        self.post_id.is_none() && self.province_id.is_none() && self.settlement_id.is_none()
+    }
+
+    /// True while a post, province or settlement reference owns the row.
+    pub fn is_attached(&self) -> bool {
+        !self.is_unowned()
+    }
 }
 
 #[derive(Clone)]
@@ -758,8 +825,14 @@ pub struct PostRow {
 }
 
 const POST_COLUMNS: &str = "id, province_id, title, body_json, created_at, updated_at, created_ms, uyezd_id, settlement_id, year, archive_reference, category";
-const IMAGE_COLUMNS: &str = "id, post_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms";
-const IMAGE_COLUMNS_I: &str = "i.id, i.post_id, i.original_key, i.thumbnail_key, i.width, i.height, i.position, i.created_at, i.created_ms, i.attached_ms";
+const IMAGE_COLUMNS: &str = "id, post_id, province_id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms";
+const IMAGE_COLUMNS_I: &str = "i.id, i.post_id, i.province_id, i.settlement_id, i.original_key, i.thumbnail_key, i.width, i.height, i.position, i.created_at, i.created_ms, i.attached_ms";
+/// SQL guard that narrows a statement to rows no post, province or settlement
+/// owns. Every cleanup, claiming and cancellation predicate has to honour all
+/// three owner columns, so an entity-owned image is never mistaken for a
+/// pending upload.
+const IMAGE_UNOWNED_GUARD: &str =
+    "post_id IS NULL AND province_id IS NULL AND settlement_id IS NULL";
 
 fn post_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PostRow> {
     Ok(PostRow {
@@ -783,14 +856,16 @@ fn image_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PostImageRow> {
     Ok(PostImageRow {
         id: row.get(0)?,
         post_id: row.get(1)?,
-        original_key: row.get(2)?,
-        thumbnail_key: row.get(3)?,
-        width: row.get(4)?,
-        height: row.get(5)?,
-        position: row.get(6)?,
-        created_at: row.get(7)?,
-        created_ms: row.get(8)?,
-        attached_ms: row.get(9)?,
+        province_id: row.get(2)?,
+        settlement_id: row.get(3)?,
+        original_key: row.get(4)?,
+        thumbnail_key: row.get(5)?,
+        width: row.get(6)?,
+        height: row.get(7)?,
+        position: row.get(8)?,
+        created_at: row.get(9)?,
+        created_ms: row.get(10)?,
+        attached_ms: row.get(11)?,
     })
 }
 
@@ -820,6 +895,54 @@ fn load_post_images(connection: &Connection, post_id: &str) -> ApiResult<Vec<Pos
         format!("SELECT {IMAGE_COLUMNS} FROM post_images WHERE post_id = ?1 ORDER BY position ASC");
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params![post_id], image_from_row)?;
+    let mut images = Vec::new();
+    for row in rows {
+        images.push(row?);
+    }
+    Ok(images)
+}
+
+/// Which of the three mutually exclusive owner columns an image belongs to.
+/// The column names are internal constants, never user input.
+#[derive(Clone, Copy)]
+enum ImageOwner {
+    Post,
+    Province,
+    Settlement,
+}
+
+impl ImageOwner {
+    fn column(self) -> &'static str {
+        match self {
+            ImageOwner::Post => "post_id",
+            ImageOwner::Province => "province_id",
+            ImageOwner::Settlement => "settlement_id",
+        }
+    }
+
+    /// Guard that the two owner columns this owner never uses stay NULL, so a
+    /// claim or a detach can never overwrite a foreign attachment.
+    fn other_columns_null(self) -> &'static str {
+        match self {
+            ImageOwner::Post => "province_id IS NULL AND settlement_id IS NULL",
+            ImageOwner::Province => "post_id IS NULL AND settlement_id IS NULL",
+            ImageOwner::Settlement => "post_id IS NULL AND province_id IS NULL",
+        }
+    }
+}
+
+/// Images attached to one owner entity, in stored order.
+fn load_owner_images(
+    connection: &Connection,
+    owner: ImageOwner,
+    owner_id: &str,
+) -> ApiResult<Vec<PostImageRow>> {
+    let sql = format!(
+        "SELECT {IMAGE_COLUMNS} FROM post_images WHERE {} = ?1 ORDER BY position ASC",
+        owner.column()
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params![owner_id], image_from_row)?;
     let mut images = Vec::new();
     for row in rows {
         images.push(row?);
@@ -985,37 +1108,45 @@ pub fn validate_image_ids(payload: &Map<String, Value>) -> ApiResult<Vec<String>
         .unwrap_or_else(|| Ok(Vec::new()))
 }
 
-/// Validates the optional `imageIds` field of a post PATCH: a present array
-/// is a full ordered replacement (an explicitly empty list removes every
-/// image) while an absent field keeps the stored list. Creation tolerates
-/// `null` as "no attachments"; for a replacement `null` is not a list and is
-/// rejected instead of guessing between "keep" and "remove every image".
+/// Validates the optional `imageIds` field of a PATCH: a present array is a
+/// full ordered replacement (an explicitly empty list removes every image)
+/// while an absent field keeps the stored list. Creation tolerates `null` as
+/// "no attachments"; for a replacement `null` is not a list and is rejected
+/// instead of guessing between "keep" and "remove every image".
+fn validate_optional_image_ids(value: Option<&Value>) -> ApiResult<Option<Vec<String>>> {
+    value.map(validate_image_id_list).transpose()
+}
+
 fn validate_image_ids_replacement(
     payload: &Map<String, Value>,
 ) -> ApiResult<Option<Vec<String>>> {
-    payload
-        .get("imageIds")
-        .map(validate_image_id_list)
-        .transpose()
+    validate_optional_image_ids(payload.get("imageIds"))
 }
 
-/// Claims one pending upload for a post inside the caller's transaction: the
-/// row must be fresh, never-attached and unexpired, and `position` becomes
-/// its stored order. A lost compare-and-set is classified by
+/// Claims one pending upload for one owner inside the caller's transaction:
+/// the row must be unowned, never-attached and unexpired, and `position`
+/// becomes its stored order. A lost compare-and-set is classified by
 /// [`claim_failure`], so an id that is unknown, expired, fenced for cleanup
-/// or already attached to another post never becomes a silent no-op.
-fn claim_post_image(
+/// or already attached to a post, a province or a settlement never becomes a
+/// silent no-op.
+fn claim_image(
     transaction: &rusqlite::Transaction<'_>,
-    post_id: &str,
+    owner: ImageOwner,
+    owner_id: &str,
     image_id: &str,
     position: i64,
     now_ms: i64,
 ) -> ApiResult<()> {
     let cutoff_ms = now_ms - PENDING_IMAGE_TTL_MS;
+    let sql = format!(
+        "UPDATE post_images SET {column} = ?1, position = ?2, attached_ms = ?3\n\
+         WHERE id = ?4 AND {column} IS NULL AND {other} AND attached_ms IS NULL AND created_ms >= ?5",
+        column = owner.column(),
+        other = owner.other_columns_null(),
+    );
     let updated = transaction.execute(
-        "UPDATE post_images SET post_id = ?1, position = ?2, attached_ms = ?3\n\
-         WHERE id = ?4 AND post_id IS NULL AND attached_ms IS NULL AND created_ms >= ?5",
-        params![post_id, position, now_ms, image_id, cutoff_ms],
+        &sql,
+        params![owner_id, position, now_ms, image_id, cutoff_ms],
     )?;
     if updated == 0 {
         return Err(claim_failure(transaction, image_id)?);
@@ -1023,49 +1154,74 @@ fn claim_post_image(
     Ok(())
 }
 
-/// Claims pending uploads for a just-inserted post inside the caller's
-/// transaction: every id must be a fresh, never-attached pending row, and the
-/// submitted order becomes `position`. Any failure aborts the whole creation,
-/// so a post can never be half-populated.
+/// Claims pending uploads for one owner in the submitted order: every id must
+/// be a fresh pending row. Any failure aborts the whole save, so an owner can
+/// never be half-populated.
+fn claim_images(
+    transaction: &rusqlite::Transaction<'_>,
+    owner: ImageOwner,
+    owner_id: &str,
+    image_ids: &[String],
+    now_ms: i64,
+) -> ApiResult<()> {
+    for (position, image_id) in image_ids.iter().enumerate() {
+        claim_image(
+            transaction,
+            owner,
+            owner_id,
+            image_id,
+            position as i64,
+            now_ms,
+        )?;
+    }
+    Ok(())
+}
+
+/// Post-specific wrapper of [`claim_images`] for [`create_post`].
 fn claim_post_images(
     transaction: &rusqlite::Transaction<'_>,
     post_id: &str,
     image_ids: &[String],
     now_ms: i64,
 ) -> ApiResult<()> {
-    for (position, image_id) in image_ids.iter().enumerate() {
-        claim_post_image(transaction, post_id, image_id, position as i64, now_ms)?;
-    }
-    Ok(())
+    claim_images(transaction, ImageOwner::Post, post_id, image_ids, now_ms)
 }
 
-/// Applies the PATCH `imageIds` full ordered replacement inside the caller's
-/// transaction. Every submitted id either already belongs to this post
-/// (retained and re-ordered) or must be a fresh pending upload claimed
-/// through the same compare-and-set as creation; every stored image that is
-/// no longer listed is detached with the durable cleanup marker (`post_id`
-/// NULL, `attached_ms` stamped now, object keys kept). Any failure aborts the
-/// whole save, so the attachment set, the stored order and the metadata
-/// always change together and a failed request never leaves a detached row
-/// behind.
+/// Applies the PATCH `imageIds` full ordered replacement for one owner inside
+/// the caller's transaction. Every submitted id either already belongs to
+/// this owner (retained and re-ordered) or must be a fresh pending upload
+/// claimed through the same compare-and-set as creation; every stored image
+/// that is no longer listed is detached with the durable cleanup marker
+/// (owner column NULL, `attached_ms` stamped now, object keys kept). Any
+/// failure aborts the whole save, so the attachment set, the stored order and
+/// the metadata always change together and a failed request never leaves a
+/// detached row behind.
 ///
 /// Returns whether any image was detached, i.e. whether the storage sweep
 /// has to run once the transaction has committed.
-fn replace_post_images(
+fn replace_images(
     transaction: &rusqlite::Transaction<'_>,
-    post_id: &str,
+    owner: ImageOwner,
+    owner_id: &str,
     image_ids: &[String],
     current: &[PostImageRow],
     now_ms: i64,
 ) -> ApiResult<bool> {
+    let column = owner.column();
     for (position, image_id) in image_ids.iter().enumerate() {
         if current.iter().any(|image| &image.id == image_id) {
-            transaction.execute(
-                "UPDATE post_images SET position = ?1 WHERE id = ?2 AND post_id = ?3",
-                params![position as i64, image_id, post_id],
-            )?;
+            let sql =
+                format!("UPDATE post_images SET position = ?1 WHERE id = ?2 AND {column} = ?3");
+            transaction.execute(&sql, params![position as i64, image_id, owner_id])?;
         } else {
-            claim_post_image(transaction, post_id, image_id, position as i64, now_ms)?;
+            claim_image(
+                transaction,
+                owner,
+                owner_id,
+                image_id,
+                position as i64,
+                now_ms,
+            )?;
         }
     }
     let mut detached = false;
@@ -1076,14 +1232,14 @@ fn replace_post_images(
         // The marker is written in the same transaction as the save: objects
         // are only ever scheduled for deletion by committed state, and the
         // sweep deletes them before dropping the row.
-        let updated = transaction.execute(
-            "UPDATE post_images SET post_id = NULL, attached_ms = ?1\n\
-             WHERE id = ?2 AND post_id = ?3 AND attached_ms > 0",
-            params![now_ms, image.id, post_id],
-        )?;
+        let sql = format!(
+            "UPDATE post_images SET {column} = NULL, attached_ms = ?1\n\
+             WHERE id = ?2 AND {column} = ?3 AND attached_ms > 0"
+        );
+        let updated = transaction.execute(&sql, params![now_ms, image.id, owner_id])?;
         if updated == 0 {
             return Err(ApiError::internal(format!(
-                "image {} lost its attachment while replacing images of post {post_id}",
+                "image {} lost its attachment while replacing images of {owner_id}",
                 image.id
             )));
         }
@@ -1092,27 +1248,47 @@ fn replace_post_images(
     Ok(detached)
 }
 
+/// Post-specific wrapper of [`replace_images`] for [`update_post`].
+fn replace_post_images(
+    transaction: &rusqlite::Transaction<'_>,
+    post_id: &str,
+    image_ids: &[String],
+    current: &[PostImageRow],
+    now_ms: i64,
+) -> ApiResult<bool> {
+    replace_images(
+        transaction,
+        ImageOwner::Post,
+        post_id,
+        image_ids,
+        current,
+        now_ms,
+    )
+}
+
 /// Classifies a claim that lost its compare-and-set — attaching a pending
-/// upload to a post or completing a provisional one — so the API can answer
+/// upload to an owner or completing a provisional one — so the API can answer
 /// 404 (missing, expired or already fenced for cleanup) or 409 (already
-/// attached) instead of a generic 400 or 500.
-fn claim_failure(
-    connection: &Connection,
-    image_id: &str,
-) -> ApiResult<ApiError> {
-    let existing: Option<(Option<String>, Option<i64>)> = connection
-        .query_row(
-            "SELECT post_id, attached_ms FROM post_images WHERE id = ?1",
-            params![image_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
+/// attached, possibly to a different kind of owner) instead of a generic 400
+/// or 500.
+fn claim_failure(connection: &Connection, image_id: &str) -> ApiResult<ApiError> {
+    let existing: Option<(Option<String>, Option<String>, Option<String>, Option<i64>)> =
+        connection
+            .query_row(
+                "SELECT post_id, province_id, settlement_id, attached_ms FROM post_images WHERE id = ?1",
+                params![image_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
     Ok(match existing {
-        Some((Some(_), _)) => ApiError::conflict("Изображение уже привязано к публикации."),
-        Some((None, Some(_))) => {
+        Some((Some(_), _, _, _)) => ApiError::conflict("Изображение уже привязано к публикации."),
+        Some((None, Some(_), _, _)) | Some((None, None, Some(_), _)) => {
+            ApiError::conflict("Изображение уже привязано к другой странице.")
+        }
+        Some((None, None, None, Some(_))) => {
             ApiError::not_found("Изображение не найдено: загрузка удалена.")
         }
-        Some((None, None)) => ApiError::not_found("Срок загрузки изображения истёк."),
+        Some((None, None, None, None)) => ApiError::not_found("Срок загрузки изображения истёк."),
         None => ApiError::not_found("Изображение не найдено."),
     })
 }
@@ -1125,9 +1301,10 @@ pub struct ImageAccess {
 }
 
 /// `true` for a pending upload that may still be shown to its uploader and
-/// claimed by a new post; expired or cancelled rows are only cleanup matter.
+/// claimed by a new owner; expired, detached or entity-owned rows are only
+/// readable by administrators (or not at all).
 pub fn is_fresh_pending(image: &PostImageRow, now_ms: i64) -> bool {
-    image.post_id.is_none()
+    image.is_unowned()
         && image.attached_ms.is_none()
         && image.created_ms >= now_ms - PENDING_IMAGE_TTL_MS
 }
@@ -1136,18 +1313,29 @@ pub fn load_image_access(connection: &Connection, id: &str) -> ApiResult<Option<
     if id.is_empty() || utf16_len(id) > MAX_ID_LENGTH {
         return Ok(None);
     }
-    let sql = "SELECT i.id, i.post_id, i.original_key, i.thumbnail_key, i.width, i.height,\n\
-                      i.position, i.created_at, i.created_ms, i.attached_ms,\n\
-                      CASE WHEN p.published = 1 THEN 1 ELSE 0 END\n\
+    // An image attached to a post, a province description or a settlement
+    // reference is publicly readable exactly while the owning province is
+    // published; pending, provisional, detached and fenced rows have no
+    // owner and stay admin-only in the route.
+    let sql = "SELECT i.id, i.post_id, i.province_id, i.settlement_id, i.original_key,\n\
+                      i.thumbnail_key, i.width, i.height, i.position, i.created_at,\n\
+                      i.created_ms, i.attached_ms,\n\
+                      CASE\n\
+                        WHEN p.published = 1 OR pv.published = 1 OR ps.published = 1 THEN 1\n\
+                        ELSE 0\n\
+                      END\n\
                FROM post_images i\n\
                LEFT JOIN posts po ON po.id = i.post_id\n\
                LEFT JOIN provinces p ON p.id = po.province_id\n\
+               LEFT JOIN provinces pv ON pv.id = i.province_id\n\
+               LEFT JOIN settlements se ON se.id = i.settlement_id\n\
+               LEFT JOIN provinces ps ON ps.id = se.province_id\n\
                WHERE i.id = ?1";
     let access = connection
         .query_row(sql, params![id], |row| {
             Ok(ImageAccess {
                 image: image_from_row(row)?,
-                published: row.get::<_, i64>(10)? == 1,
+                published: row.get::<_, i64>(12)? == 1,
             })
         })
         .optional()?;
@@ -1162,8 +1350,8 @@ pub fn begin_image_upload(connection: &Connection, id: &str) -> ApiResult<()> {
     let created_ms = parse_js_date_ms(&timestamp).unwrap_or_else(|| now_unix() * 1_000);
     let (original_key, thumbnail_key) = crate::s3::image_keys(id)?;
     connection.execute(
-        "INSERT INTO post_images (id, post_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
-         VALUES (?1, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, 0)",
+        "INSERT INTO post_images (id, post_id, province_id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
+         VALUES (?1, NULL, NULL, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, 0)",
         params![id, original_key, thumbnail_key, timestamp, created_ms],
     )?;
     Ok(())
@@ -1182,9 +1370,12 @@ pub fn complete_image_upload(
     width: i64,
     height: i64,
 ) -> ApiResult<PostImageRow> {
-    let updated = connection.execute(
+    let sql = format!(
         "UPDATE post_images SET original_key = ?1, thumbnail_key = ?2, width = ?3, height = ?4, attached_ms = NULL\n\
-         WHERE id = ?5 AND post_id IS NULL AND attached_ms = 0",
+         WHERE id = ?5 AND {IMAGE_UNOWNED_GUARD} AND attached_ms = 0"
+    );
+    let updated = connection.execute(
+        &sql,
         params![original_key, thumbnail_key, width, height, id],
     )?;
     if updated == 0 {
@@ -1208,10 +1399,10 @@ pub fn mark_upload_failed(connection: &Connection, id: &str) -> ApiResult<Option
     let created_ms = parse_js_date_ms(&timestamp).unwrap_or_else(|| now_unix() * 1_000);
     let (original_key, thumbnail_key) = crate::s3::image_keys(id)?;
     let changed = connection.execute(
-        "INSERT INTO post_images (id, post_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
-         VALUES (?1, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, ?5)\n\
+        "INSERT INTO post_images (id, post_id, province_id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
+         VALUES (?1, NULL, NULL, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, ?5)\n\
          ON CONFLICT(id) DO UPDATE SET attached_ms = excluded.attached_ms\n\
-         WHERE post_images.post_id IS NULL AND post_images.attached_ms = 0",
+         WHERE post_images.post_id IS NULL AND post_images.province_id IS NULL AND post_images.settlement_id IS NULL AND post_images.attached_ms = 0",
         params![id, original_key, thumbnail_key, timestamp, created_ms],
     )?;
     let sql = format!("SELECT {IMAGE_COLUMNS} FROM post_images WHERE id = ?1");
@@ -1222,8 +1413,7 @@ pub fn mark_upload_failed(connection: &Connection, id: &str) -> ApiResult<Option
     // positive marker set behind its back could be finished by a stale pass.
     Ok(match existing {
         Some(row)
-            if row.post_id.is_none()
-                && (changed > 0 || matches!(row.attached_ms, Some(ms) if ms < 0)) =>
+            if row.is_unowned() && (changed > 0 || matches!(row.attached_ms, Some(ms) if ms < 0)) =>
         {
             Some(row)
         }
@@ -1241,11 +1431,11 @@ pub fn take_image_for_cleanup(
     id: &str,
     now_ms: i64,
 ) -> ApiResult<Option<PostImageRow>> {
-    let updated = connection.execute(
+    let sql = format!(
         "UPDATE post_images SET attached_ms = COALESCE(NULLIF(attached_ms, 0), ?1)\n\
-         WHERE id = ?2 AND post_id IS NULL AND (attached_ms IS NULL OR attached_ms > 0)",
-        params![now_ms, id],
-    )?;
+         WHERE id = ?2 AND {IMAGE_UNOWNED_GUARD} AND (attached_ms IS NULL OR attached_ms > 0)"
+    );
+    let updated = connection.execute(&sql, params![now_ms, id])?;
     if updated == 0 {
         return Ok(None);
     }
@@ -1281,7 +1471,7 @@ pub fn list_image_cleanup_batch(
              SELECT {IMAGE_COLUMNS},\n\
                     COALESCE(NULLIF(attached_ms, 0), created_ms) AS sort_key\n\
              FROM post_images\n\
-             WHERE post_id IS NULL AND (\n\
+             WHERE {IMAGE_UNOWNED_GUARD} AND (\n\
                  attached_ms < 0\n\
                  OR attached_ms > 0\n\
                  OR (attached_ms = 0 AND created_ms < ?1)\n\
@@ -1328,14 +1518,17 @@ pub fn claim_image_cleanup(
 ) -> ApiResult<Option<PostImageRow>> {
     let grace_cutoff_ms = now_ms - IMAGE_UPLOAD_GRACE_MS;
     let cutoff_ms = now_ms - PENDING_IMAGE_TTL_MS;
-    let updated = connection.execute(
+    let sql = format!(
         "UPDATE post_images SET attached_ms = ?1\n\
-         WHERE id = ?2 AND post_id IS NULL AND (\n\
+         WHERE id = ?2 AND {IMAGE_UNOWNED_GUARD} AND (\n\
              attached_ms < 0\n\
              OR attached_ms > 0\n\
              OR (attached_ms = 0 AND created_ms < ?3)\n\
              OR (attached_ms IS NULL AND created_ms < ?4)\n\
-         )",
+         )"
+    );
+    let updated = connection.execute(
+        &sql,
         params![IMAGE_CLEANUP_FENCED_MS, id, grace_cutoff_ms, cutoff_ms],
     )?;
     if updated == 0 {
@@ -1383,10 +1576,10 @@ fn cleanup_sort_key(image: &PostImageRow) -> i64 {
 /// that already left the provisional state: cleanup must never delete an
 /// attached image nor race a live upload whose storage PUTs are in flight.
 pub fn finish_image_cleanup(connection: &Connection, id: &str) -> ApiResult<bool> {
-    let removed = connection.execute(
-        "DELETE FROM post_images WHERE id = ?1 AND post_id IS NULL AND (attached_ms IS NULL OR attached_ms != 0)",
-        params![id],
-    )?;
+    let sql = format!(
+        "DELETE FROM post_images WHERE id = ?1 AND {IMAGE_UNOWNED_GUARD} AND (attached_ms IS NULL OR attached_ms != 0)"
+    );
+    let removed = connection.execute(&sql, params![id])?;
     Ok(removed > 0)
 }
 
@@ -1418,12 +1611,20 @@ pub fn build_published_gubernia(
         .iter()
         .map(settlement_value)
         .collect::<Vec<_>>();
+    // Every serialized publication carries the province gallery (possibly
+    // empty), so the public contract never has to distinguish "absent" from
+    // "none" — exactly like the images array of a post.
+    let images = load_owner_images(connection, ImageOwner::Province, id)?;
 
     let mut out = Map::new();
     out.insert("id".to_string(), Value::String(id.to_string()));
     out.insert("name".to_string(), Value::String(feature.name.clone()));
     out.insert("slug".to_string(), Value::String(slug.to_string()));
     out.insert("description".to_string(), description_value(description_json)?);
+    out.insert(
+        "images".to_string(),
+        Value::Array(images.iter().map(image_value).collect()),
+    );
     out.insert("posts".to_string(), Value::Array(posts));
     out.insert("settlements".to_string(), Value::Array(settlements));
     Ok(Value::Object(out))
@@ -1661,19 +1862,44 @@ pub fn publish_gubernia(
     Ok(gubernia)
 }
 
+/// Saves the province PATCH: slug, description and, when `imageIds` is
+/// present, the full ordered province gallery, all in one transaction, so a
+/// failed claim never leaves a partial slug, description or gallery. An
+/// omitted field keeps the stored images, and a province may carry images
+/// with a null description.
+///
+/// Returns the serialized publication and whether the save detached persisted
+/// images, i.e. whether the caller has to run the storage cleanup sweep.
 pub fn update_gubernia_publication(
     connection: &mut Connection,
     canonical: &CanonicalProvinces,
     id: &str,
     slug_value: &Value,
     description_value: Option<&Value>,
-) -> ApiResult<Value> {
+    image_ids: Option<&Value>,
+) -> ApiResult<(Value, bool)> {
     let slug = validate_slug(slug_value)?;
     let description = validate_description(description_value)?;
+    let replacement = validate_optional_image_ids(image_ids)?;
     require_feature(canonical, id)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_published(&transaction, id)?;
     assert_unique_slug(&transaction, &slug, Some(id))?;
+    let now_ms = now_unix() * 1_000;
+    let detached = match &replacement {
+        Some(image_ids) => {
+            let current = load_owner_images(&transaction, ImageOwner::Province, id)?;
+            replace_images(
+                &transaction,
+                ImageOwner::Province,
+                id,
+                image_ids,
+                &current,
+                now_ms,
+            )?
+        }
+        None => false,
+    };
     let description_json = description
         .map(|document| serde_json::to_string(&document))
         .transpose()?;
@@ -1689,7 +1915,7 @@ pub fn update_gubernia_publication(
         description_json.as_deref(),
     )?;
     transaction.commit()?;
-    Ok(gubernia)
+    Ok((gubernia, detached))
 }
 
 fn assert_unique_slug(
@@ -1712,6 +1938,11 @@ fn assert_unique_slug(
     Ok(())
 }
 
+/// Withdraws one province: its posts and settlements are deleted, so every
+/// affected image is detached first with the durable cleanup marker (post
+/// images through the foreign key, province and settlement galleries
+/// explicitly). The database rows stay until the object deletion is
+/// confirmed by the sweep.
 pub fn unpublish_gubernia(
     connection: &mut Connection,
     canonical: &CanonicalProvinces,
@@ -1720,6 +1951,16 @@ pub fn unpublish_gubernia(
     require_feature(canonical, id)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_published(&transaction, id)?;
+    let now_ms = now_unix() * 1_000;
+    transaction.execute(
+        "UPDATE post_images SET province_id = NULL, attached_ms = ?1 WHERE province_id = ?2",
+        params![now_ms, id],
+    )?;
+    transaction.execute(
+        "UPDATE post_images SET settlement_id = NULL, attached_ms = ?1\n\
+         WHERE settlement_id IN (SELECT id FROM settlements WHERE province_id = ?2)",
+        params![now_ms, id],
+    )?;
     transaction.execute("DELETE FROM posts WHERE province_id = ?1", params![id])?;
     transaction.execute("DELETE FROM settlements WHERE province_id = ?1", params![id])?;
     transaction.execute(
@@ -2119,12 +2360,16 @@ pub fn create_settlement(
     Ok(value)
 }
 
+/// Deletes one settlement and detaches its reference gallery before the row
+/// disappears: the durable cleanup marker keeps the storage keys, so the
+/// sweep can delete the objects after the row is gone. Returns whether any
+/// image was detached so the route can kick the cleanup sweep.
 pub fn delete_settlement(
     connection: &mut Connection,
     canonical: &CanonicalProvinces,
     gubernia_id: &str,
     settlement_id: &str,
-) -> ApiResult<()> {
+) -> ApiResult<bool> {
     require_feature(canonical, gubernia_id)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_published(&transaction, gubernia_id)?;
@@ -2134,6 +2379,12 @@ pub fn delete_settlement(
     {
         return Err(ApiError::not_found("Населённый пункт не найден."));
     }
+    let now_ms = now_unix() * 1_000;
+    let detached = transaction.execute(
+        "UPDATE post_images SET settlement_id = NULL, attached_ms = ?1\n\
+         WHERE settlement_id = ?2 AND attached_ms > 0",
+        params![now_ms, settlement_id],
+    )? > 0;
     transaction.execute(
         "DELETE FROM settlements WHERE id = ?1 AND province_id = ?2",
         params![settlement_id, gubernia_id],
@@ -2143,7 +2394,7 @@ pub fn delete_settlement(
         params![gubernia_id, settlement_id],
     )?;
     transaction.commit()?;
-    Ok(())
+    Ok(detached)
 }
 
 #[cfg(test)]
@@ -2243,8 +2494,7 @@ mod tests {
     // Post images: validation, claiming and cleanup bookkeeping
     // -----------------------------------------------------------------------
 
-    /// Minimal schema for the image lifecycle: the posts table (foreign keys
-    /// stay off on this in-memory connection) plus the migration-4 table.
+    /// Minimal schemas for image owners and the version-5 ownership migration.
     fn image_test_connection() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -2252,6 +2502,9 @@ mod tests {
             .unwrap();
         connection
             .execute_batch(include_str!("../migrations/0004_post_images.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/0005_entity_images.sql"))
             .unwrap();
         connection
     }
@@ -2287,6 +2540,19 @@ mod tests {
                 "INSERT INTO posts (id, province_id, title, body_json, created_at, updated_at, created_ms, position)\n\
                  VALUES (?1, 'province-1', 'Тест', '{}', '2026-10-09T00:00:00.000Z', '2026-10-09T00:00:00.000Z', 0, 0)",
                 rusqlite::params![post_id],
+            )
+            .unwrap();
+    }
+
+    fn insert_test_settlement(connection: &Connection) {
+        connection
+            .execute_batch(
+                "INSERT OR IGNORE INTO provinces (id, published, slug, description)
+                 VALUES ('province-1', 1, 'province-1', '');
+                 INSERT INTO settlements
+                 (id, province_id, name, uyezd_id, latitude, longitude, created_at, position)
+                 VALUES ('settlement-1', 'province-1', 'Село', 'district-1', 1, 1,
+                         '2026-10-09T00:00:00.000Z', 0);",
             )
             .unwrap();
     }
@@ -2968,5 +3234,207 @@ mod tests {
             list_image_cleanup_batch(&connection, now_ms, None, poison.len() as u32).unwrap();
         assert_eq!(retry.len(), poison.len());
         assert!(poison.contains(&retry[0].id));
+    }
+
+    // -----------------------------------------------------------------------
+    // Entity galleries: the three owner columns are mutually exclusive
+    // -----------------------------------------------------------------------
+
+    /// A gallery attached to a province or a settlement is never treated as a
+    /// pending upload: cross-owner claims fail, and the TTL sweep listing,
+    /// cancellation, fencing and row drops all leave it alone.
+    #[test]
+    fn entity_owned_images_are_immune_to_pending_cleanup() {
+        let mut connection = image_test_connection();
+        let now_ms = 1_000_000_000_000i64;
+        insert_test_post(&connection, "post-1");
+        insert_test_settlement(&connection);
+        insert_test_pending(&connection, "img-province", now_ms);
+        insert_test_pending(&connection, "img-settlement", now_ms);
+
+        let transaction = connection.transaction().unwrap();
+        claim_images(
+            &transaction,
+            ImageOwner::Province,
+            "province-1",
+            &["img-province".to_string()],
+            now_ms,
+        )
+        .unwrap();
+        claim_images(
+            &transaction,
+            ImageOwner::Settlement,
+            "settlement-1",
+            &["img-settlement".to_string()],
+            now_ms,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        // Age the uploads only after attaching: expired pending rows cannot be claimed.
+        let now_ms = now_ms + PENDING_IMAGE_TTL_MS + IMAGE_UPLOAD_GRACE_MS + 1;
+
+        let province_image = load_image_access(&connection, "img-province")
+            .unwrap()
+            .unwrap()
+            .image;
+        assert_eq!(province_image.province_id.as_deref(), Some("province-1"));
+        assert!(province_image.post_id.is_none());
+        assert!(!is_fresh_pending(&province_image, now_ms));
+        let settlement_image = load_image_access(&connection, "img-settlement")
+            .unwrap()
+            .unwrap()
+            .image;
+        assert_eq!(
+            settlement_image.settlement_id.as_deref(),
+            Some("settlement-1")
+        );
+
+        for id in ["img-province", "img-settlement"] {
+            assert!(
+                !list_image_cleanup_batch(&connection, now_ms, None, 10)
+                    .unwrap()
+                    .iter()
+                    .any(|image| image.id == id),
+                "{id} must not be listed for cleanup"
+            );
+            assert!(take_image_for_cleanup(&connection, id, now_ms)
+                .unwrap()
+                .is_none());
+            assert!(claim_image_cleanup(&connection, id, now_ms)
+                .unwrap()
+                .is_none());
+            assert!(!finish_image_cleanup(&connection, id).unwrap());
+        }
+
+        // A post can never claim an image another owner already holds.
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            claim_post_images(
+                &transaction,
+                "post-1",
+                &["img-province".to_string()],
+                now_ms
+            )
+            .unwrap_err()
+            .message,
+            "Изображение уже привязано к другой странице."
+        );
+        transaction.rollback().unwrap();
+
+        // Replacing one owner's gallery with nothing detaches exactly that
+        // image; the other owner keeps its own.
+        let transaction = connection.transaction().unwrap();
+        let current =
+            load_owner_images(&transaction, ImageOwner::Province, "province-1").unwrap();
+        assert!(replace_images(
+            &transaction,
+            ImageOwner::Province,
+            "province-1",
+            &[],
+            &current,
+            now_ms
+        )
+        .unwrap());
+        transaction.commit().unwrap();
+
+        let detached = load_image_access(&connection, "img-province")
+            .unwrap()
+            .unwrap()
+            .image;
+        assert!(detached.is_unowned());
+        assert!(detached.attached_ms.is_some_and(|ms| ms > 0));
+        assert_eq!(
+            load_owner_images(&connection, ImageOwner::Settlement, "settlement-1")
+                .unwrap()
+                .len(),
+            1,
+            "the foreign gallery is untouched"
+        );
+        // Only once it is detached does the sweep own it.
+        let batch = list_image_cleanup_batch(&connection, now_ms, None, 10).unwrap();
+        assert_eq!(
+            batch.iter().map(|image| image.id.as_str()).collect::<Vec<_>>(),
+            vec!["img-province"]
+        );
+        assert!(finish_image_cleanup(&connection, "img-province").unwrap());
+    }
+
+    /// The settlement reference block stores its ordered gallery next to the
+    /// body: an empty document is valid only while an image remains,
+    /// body-only saves preserve the gallery and a failed save rolls the whole
+    /// block back.
+    #[test]
+    fn settlement_reference_images_round_trip_without_body() {
+        let mut connection = image_test_connection();
+        insert_test_settlement(&connection);
+        let now_ms = now_unix() * 1_000;
+        insert_test_pending(&connection, "img-ref", now_ms);
+        let empty = json!({ "type": "doc", "content": [] });
+        let text = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "Справка" }]
+            }]
+        });
+
+        let (body, images, detached) = save_settlement_reference(
+            &mut connection,
+            "settlement-1",
+            &empty,
+            Some(&json!(["img-ref"])),
+        )
+        .unwrap();
+        assert_eq!(body, plain_text_to_document(""));
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].settlement_id.as_deref(), Some("settlement-1"));
+        assert!(!detached);
+        // The image-only block reads back as the canonical empty document.
+        let (read_body, read_images) = get_settlement_reference(&connection, "settlement-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(read_body, plain_text_to_document(""));
+        assert_eq!(read_images.len(), 1);
+
+        // A body-only save keeps the gallery and the stored text...
+        let (_, images, detached) =
+            save_settlement_reference(&mut connection, "settlement-1", &text, None).unwrap();
+        assert_eq!(images.len(), 1);
+        assert!(!detached);
+        // ...so an empty document that would remove the last image is still
+        // rejected as a whole: the detach rolls back with the body.
+        let rejected = save_settlement_reference(
+            &mut connection,
+            "settlement-1",
+            &empty,
+            Some(&json!([])),
+        )
+        .unwrap_err();
+        assert_eq!(rejected.message, "Текст публикации не должен быть пустым.");
+        let (kept_body, kept_images) = get_settlement_reference(&connection, "settlement-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept_body, text);
+        assert_eq!(kept_images.len(), 1, "the failed save detached nothing");
+
+        // A body that keeps text may drop the gallery, and only then is the
+        // row handed to the cleanup sweep.
+        let (_, images, detached) = save_settlement_reference(
+            &mut connection,
+            "settlement-1",
+            &text,
+            Some(&json!([])),
+        )
+        .unwrap();
+        assert!(images.is_empty());
+        assert!(detached);
+        let (_, empty_images) = get_settlement_reference(&connection, "settlement-1")
+            .unwrap()
+            .unwrap();
+        assert!(empty_images.is_empty());
+        assert!(list_image_cleanup_batch(&connection, now_ms, None, 10)
+            .unwrap()
+            .iter()
+            .any(|image| image.id == "img-ref"));
     }
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { RichPageContentEditor } from "@/app/o-proekte/AboutContentEditor";
+import type { PostImage } from "@/lib/gubernia-publications";
 import type { PostDocument } from "@/lib/post-content";
 import SettlementDeleteButton from "./SettlementDeleteButton";
 import styles from "./SettlementReferenceEditor.module.css";
@@ -8,6 +9,8 @@ import styles from "./SettlementReferenceEditor.module.css";
 type SettlementReferenceEditorProps = {
   slug: string;
   initialBody: PostDocument | null;
+  /** Saved reference images in display order; empty when there are none. */
+  initialImages: PostImage[];
   isAdmin: boolean;
   settlementId: string;
   guberniaId: string;
@@ -20,7 +23,8 @@ type SettlementReferenceEditorProps = {
 /**
  * Public reference block of a settlement page. Every visitor sees a truncated
  * rich-text prefix of the stored text with a «Читать далее» disclosure that
- * reveals the full document; a short note replaces it when nothing is stored.
+ * reveals the full document; a short note replaces the block only when neither
+ * text nor images are stored, and images render as a gallery above the text.
  * Only the admin gets the shared rich-text editor (always the whole document)
  * plus the adjacent settlement removal action. The admin row itself renders in
  * the record's header slot, so it sits under the page title, before the Уезд
@@ -29,6 +33,7 @@ type SettlementReferenceEditorProps = {
 export default function SettlementReferenceEditor({
   slug,
   initialBody,
+  initialImages,
   isAdmin,
   settlementId,
   guberniaId,
@@ -39,6 +44,9 @@ export default function SettlementReferenceEditor({
   return (
     <RichPageContentEditor
       initialBody={initialBody}
+      initialImages={initialImages}
+      imageSupport
+      imagesAriaLabel="Изображения справки"
       isAdmin={isAdmin}
       endpoint={`/api/naselennyy-punkt/${encodeURIComponent(slug)}/reference`}
       ariaLabel="Справочная информация"

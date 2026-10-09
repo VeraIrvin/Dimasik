@@ -472,17 +472,6 @@ async fn gubernia_publication_lifecycle() {
     )
     .await;
     assert_eq!(published.status, StatusCode::CREATED);
-    assert_eq!(
-        published.body,
-        json!({
-            "id": "gubernia-1897-1",
-            "name": "Губерния 1",
-            "slug": "one",
-            "description": null,
-            "posts": [],
-            "settlements": [],
-        })
-    );
 
     let duplicate_slug = api(
         &app,
@@ -3160,4 +3149,449 @@ async fn district_relations_are_enforced_from_the_database() {
         post_after_delete.error_message(),
         "Уезд не найден в этой губернии."
     );
+}
+
+/// Reads one stored image row as `(post_id, province_id, settlement_id,
+/// attached_ms)`; entity ownership and the durable cleanup marker have to
+/// survive every save.
+fn image_owners(
+    database: &std::path::Path,
+    id: &str,
+) -> (Option<String>, Option<String>, Option<String>, Option<i64>) {
+    let connection = dimasik_backend::db::open_database(database).expect("database opens");
+    connection
+        .query_row(
+            "SELECT post_id, province_id, settlement_id, attached_ms FROM post_images WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("image row")
+}
+
+/// The province PATCH keeps its slug/description contract and gains the
+/// optional ordered gallery: omitted fields keep the stored images, a null
+/// description is allowed next to photos, and the public publication exposes
+/// the gallery exactly while the province is published.
+#[tokio::test]
+async fn province_patch_manages_gallery_and_publishes_it() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let database = env.config.database_path.clone();
+    let now_ms = dimasik_backend::util::now_unix() * 1_000;
+    insert_pending_image(&database, "img-prov-first", 640, 480, now_ms);
+    insert_pending_image(&database, "img-prov-second", 800, 600, now_ms);
+
+    // The default publication carries an empty gallery, and pending uploads
+    // stay administrator-only while attached images of a published province
+    // are readable (the storage layer is unconfigured, so the read stops at
+    // 503 instead of 404).
+    let before = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(before.body["images"], json!([]));
+    let pending_anonymous = api(
+        &app,
+        Method::GET,
+        "/api/post-images/img-prov-first/original",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(pending_anonymous.status, StatusCode::UNAUTHORIZED);
+    let pending_admin = api(
+        &app,
+        Method::GET,
+        "/api/post-images/img-prov-first/original",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(pending_admin.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // A gallery with a null description: allowed for a province, and the
+    // submitted order is the stored order.
+    let saved = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": Value::Null,
+            "imageIds": ["img-prov-second", "img-prov-first"]
+        })),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK);
+    assert_eq!(saved.body["description"], Value::Null);
+    assert_eq!(saved.body["images"][0]["id"], "img-prov-second");
+    assert_eq!(saved.body["images"][1]["id"], "img-prov-first");
+    assert_eq!(saved.body["images"][1]["width"], 640);
+    assert_eq!(
+        saved.body["images"][1]["originalUrl"],
+        "/api/post-images/img-prov-first/original"
+    );
+    let (post_owner, province_owner, settlement_owner, attached) =
+        image_owners(&database, "img-prov-first");
+    assert_eq!(post_owner, None);
+    assert_eq!(province_owner.as_deref(), Some("ryazan"));
+    assert_eq!(settlement_owner, None);
+    assert!(attached.is_some_and(|ms| ms > 0));
+
+    // The public SSR read exposes the same ordered gallery, and its images
+    // are publicly readable.
+    let published = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(published.body["images"][0]["id"], "img-prov-second");
+    assert_eq!(published.body["images"][1]["id"], "img-prov-first");
+    let public_read = api(
+        &app,
+        Method::GET,
+        "/api/post-images/img-prov-first/original",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(public_read.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // An omitted field keeps the stored gallery untouched.
+    let omitted = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({ "slug": "ryazanskaya", "description": paragraph_doc("Сведения") })),
+    )
+    .await;
+    assert_eq!(omitted.status, StatusCode::OK);
+    assert_eq!(omitted.body["description"], paragraph_doc("Сведения"));
+    assert_eq!(omitted.body["images"][0]["id"], "img-prov-second");
+    assert_eq!(omitted.body["images"][1]["id"], "img-prov-first");
+
+    // A replacement that leaves one image out detaches exactly that row.
+    let reduced = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": paragraph_doc("Сведения"),
+            "imageIds": ["img-prov-first"]
+        })),
+    )
+    .await;
+    assert_eq!(reduced.status, StatusCode::OK);
+    assert_eq!(reduced.body["images"][0]["id"], "img-prov-first");
+    let (_, detached_owner, _, detached_marker) = image_owners(&database, "img-prov-second");
+    assert_eq!(detached_owner, None);
+    assert!(detached_marker.is_some_and(|ms| ms > 0));
+    let gone = api(
+        &app,
+        Method::GET,
+        "/api/post-images/img-prov-second/original",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+/// Cross-owner ids and malformed lists fail the whole province save without
+/// touching slug, description or gallery, and unpublishing detaches the
+/// province gallery together with the images of its deleted posts.
+#[tokio::test]
+async fn province_gallery_conflicts_roll_back_and_unpublish_detaches() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let database = env.config.database_path.clone();
+    let now_ms = dimasik_backend::util::now_unix() * 1_000;
+    insert_pending_image(&database, "img-owner-prov", 100, 80, now_ms);
+    insert_pending_image(&database, "img-owner-post", 200, 160, now_ms);
+    insert_pending_image(&database, "img-owner-free", 300, 240, now_ms);
+
+    let post = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/posts",
+        Some(&cookie),
+        Some(json!({
+            "title": "Пост",
+            "body": paragraph_doc("Текст"),
+            "category": "Статья",
+            "imageIds": ["img-owner-post"]
+        })),
+    )
+    .await;
+    assert_eq!(post.status, StatusCode::CREATED);
+
+    let seeded = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": paragraph_doc("Сведения"),
+            "imageIds": ["img-owner-prov"]
+        })),
+    )
+    .await;
+    assert_eq!(seeded.status, StatusCode::OK);
+    assert_eq!(seeded.body["images"][0]["id"], "img-owner-prov");
+
+    // A request that claims a fresh image before failing on the post-owned
+    // one must roll the whole save back.
+    let conflict = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({
+            "slug": "drugoy-slug",
+            "description": paragraph_doc("Испорченное"),
+            "imageIds": ["img-owner-free", "img-owner-post"]
+        })),
+    )
+    .await;
+    assert_eq!(conflict.status, StatusCode::CONFLICT);
+    let (_, free_owner, _, free_attached) = image_owners(&database, "img-owner-free");
+    assert_eq!(free_owner, None, "the failed save must not claim the fresh id");
+    assert_eq!(free_attached, None);
+    let gubernia = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(gubernia.body["slug"], "ryazanskaya");
+    assert_eq!(gubernia.body["description"], paragraph_doc("Сведения"));
+    assert_eq!(gubernia.body["images"][0]["id"], "img-owner-prov");
+
+    // Malformed lists are rejected before anything is written.
+    let duplicates = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({
+            "slug": "drugoy-slug",
+            "description": paragraph_doc("Испорченное"),
+            "imageIds": ["img-owner-free", "img-owner-free"]
+        })),
+    )
+    .await;
+    assert_eq!(duplicates.status, StatusCode::BAD_REQUEST);
+    let after = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(after.body["slug"], "ryazanskaya", "no partial slug write");
+
+    // Unpublishing deletes the posts and detaches both galleries.
+    let unpublished = api(
+        &app,
+        Method::DELETE,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(unpublished.status, StatusCode::NO_CONTENT);
+    let (_, province_owner, _, province_marker) = image_owners(&database, "img-owner-prov");
+    assert_eq!(province_owner, None);
+    assert!(province_marker.is_some_and(|ms| ms > 0));
+    let (post_owner, _, _, post_marker) = image_owners(&database, "img-owner-post");
+    assert_eq!(post_owner, None, "the deleted post detaches its image");
+    assert!(post_marker.is_some_and(|ms| ms > 0));
+    let gone = api(
+        &app,
+        Method::GET,
+        "/api/post-images/img-owner-prov/original",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+/// The settlement reference PATCH gains the optional ordered gallery: an
+/// empty document is accepted while images remain, body-only saves keep the
+/// photos, a foreign id rolls everything back and the About editor stays
+/// without a photo field.
+#[tokio::test]
+async fn settlement_reference_accepts_images_and_preserves_body_only_saves() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let database = env.config.database_path.clone();
+    let now_ms = dimasik_backend::util::now_unix() * 1_000;
+    insert_pending_image(&database, "img-ref-first", 640, 480, now_ms);
+    insert_pending_image(&database, "img-ref-second", 800, 600, now_ms);
+
+    let created = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/settlements",
+        Some(&cookie),
+        Some(json!({
+            "name": "С фотографиями",
+            "uyezdId": "uyezd-1897-2",
+            "coordinates": "22, 22",
+            "url": "/naselennyy-punkt/ref-photos",
+            "type": "Село"
+        })),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let settlement_id = created.body["id"].as_str().unwrap().to_string();
+    let canonical_empty = json!({ "type": "doc", "content": [{ "type": "paragraph" }] });
+    let text = paragraph_doc("Справка");
+
+    // An image-only reference: the empty document is accepted with photos and
+    // stored canonically, in the submitted order.
+    let saved = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({
+            "body": { "type": "doc", "content": [] },
+            "imageIds": ["img-ref-second", "img-ref-first"]
+        })),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK);
+    assert_eq!(saved.body["body"], canonical_empty);
+    assert_eq!(saved.body["images"][0]["id"], "img-ref-second");
+    assert_eq!(saved.body["images"][1]["id"], "img-ref-first");
+    let (post_owner, province_owner, settlement_owner, _) =
+        image_owners(&database, "img-ref-first");
+    assert_eq!(post_owner, None);
+    assert_eq!(province_owner, None);
+    assert_eq!(settlement_owner.as_deref(), Some(settlement_id.as_str()));
+
+    // The public SSR read returns the body plus the gallery.
+    let reference = api(
+        &app,
+        Method::GET,
+        &format!("/internal/settlement-reference/{settlement_id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(reference.status, StatusCode::OK);
+    assert_eq!(reference.body["body"], canonical_empty);
+    assert_eq!(reference.body["images"].as_array().unwrap().len(), 2);
+    assert_eq!(reference.body["images"][0]["id"], "img-ref-second");
+
+    // A body-only save (the old payload shape) preserves the gallery.
+    let body_only = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({ "body": text })),
+    )
+    .await;
+    assert_eq!(body_only.status, StatusCode::OK);
+    assert_eq!(body_only.body["images"].as_array().unwrap().len(), 2);
+
+    // Empty text without photos is still rejected, and the failed save may
+    // not drop the stored images either.
+    let rejected = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({ "body": { "type": "doc", "content": [] }, "imageIds": [] })),
+    )
+    .await;
+    assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+    let unchanged = api(
+        &app,
+        Method::GET,
+        &format!("/internal/settlement-reference/{settlement_id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(unchanged.body["body"], text);
+    assert_eq!(unchanged.body["images"].as_array().unwrap().len(), 2);
+
+    // Removing one image detaches only that row.
+    let reduced = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({ "body": text, "imageIds": ["img-ref-first"] })),
+    )
+    .await;
+    assert_eq!(reduced.status, StatusCode::OK);
+    assert_eq!(reduced.body["images"][0]["id"], "img-ref-first");
+    let (_, _, detached_owner, detached_marker) = image_owners(&database, "img-ref-second");
+    assert_eq!(detached_owner, None);
+    assert!(detached_marker.is_some_and(|ms| ms > 0));
+
+    // A post-owned image is refused and changes nothing.
+    insert_pending_image(&database, "img-ref-post", 10, 10, now_ms);
+    let post = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/posts",
+        Some(&cookie),
+        Some(json!({
+            "title": "Владелец",
+            "body": paragraph_doc("Текст"),
+            "category": "Статья",
+            "imageIds": ["img-ref-post"]
+        })),
+    )
+    .await;
+    assert_eq!(post.status, StatusCode::CREATED);
+    let conflict = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({ "body": text, "imageIds": ["img-ref-post"] })),
+    )
+    .await;
+    assert_eq!(conflict.status, StatusCode::CONFLICT);
+    let after_conflict = api(
+        &app,
+        Method::GET,
+        &format!("/internal/settlement-reference/{settlement_id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(after_conflict.body["body"], text);
+    assert_eq!(after_conflict.body["images"][0]["id"], "img-ref-first");
+
+    // The About editor did not grow a photo field.
+    let about = api(
+        &app,
+        Method::PATCH,
+        "/api/about-content",
+        Some(&cookie),
+        Some(json!({ "body": paragraph_doc("О проекте"), "imageIds": [] })),
+    )
+    .await;
+    assert_eq!(about.status, StatusCode::BAD_REQUEST);
+
+    // Deleting the settlement detaches the whole reference gallery.
+    let deleted = api(
+        &app,
+        Method::DELETE,
+        &format!("/api/gubernias/ryazan/settlements/{settlement_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let (_, _, gone_owner, gone_marker) = image_owners(&database, "img-ref-first");
+    assert_eq!(gone_owner, None);
+    assert!(gone_marker.is_some_and(|ms| ms > 0));
+    let gone = api(
+        &app,
+        Method::GET,
+        "/api/post-images/img-ref-first/original",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
 }

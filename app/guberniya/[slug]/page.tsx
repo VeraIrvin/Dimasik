@@ -47,6 +47,7 @@ export default async function GuberniaPage({
               id={gubernia.id}
               slug={gubernia.slug}
               description={gubernia.description}
+              images={gubernia.images}
             />
           </div>
         ) : null}

@@ -12,15 +12,17 @@ import RichTextField, {
   usePostDocumentEditor,
   type RichTextFieldHandle,
 } from "@/components/RichTextField";
+import type { PostImage } from "@/lib/gubernia-publications";
 import type { PostDocument } from "@/lib/post-content";
+import PostImageUploader, { type PostImageUploaderHandle } from "./PostImageUploader";
 import styles from "./GuberniaAdminControls.module.css";
-
-const KEYBOARD_HINT = "Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца.";
 
 type Props = {
   id: string;
   slug: string;
   description: PostDocument | null;
+  /** Saved reference images in display order; empty when there are none. */
+  images: PostImage[];
 };
 
 type UpdateResponse = {
@@ -37,7 +39,7 @@ async function errorMessage(response: Response, fallback: string) {
   return fallback;
 }
 
-export default function GuberniaAdminControls({ id, slug, description }: Props) {
+export default function GuberniaAdminControls({ id, slug, description, images }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -136,6 +138,7 @@ export default function GuberniaAdminControls({ id, slug, description }: Props) 
           id={id}
           initialSlug={slug}
           initialDescription={description}
+          initialImages={images}
           onSaved={handleSaved}
           onCancel={cancelEdit}
         />
@@ -214,27 +217,33 @@ type GuberniaEditFormProps = {
   id: string;
   initialSlug: string;
   initialDescription: PostDocument | null;
+  initialImages: PostImage[];
   onSaved: (slug: string) => void;
   onCancel: () => void;
 };
 
 /**
  * Mounted only while the admin edits the province: mounting seeds the slug
- * field and the rich-text editor, so cancelling discards both and the next
- * open starts from the stored values. A blank editor stores no description.
+ * field, the rich-text editor and the image picker, so cancelling discards
+ * them all and the next open starts from the stored values. A blank editor
+ * stores no description.
  */
 function GuberniaEditForm({
   id,
   initialSlug,
   initialDescription,
+  initialImages,
   onSaved,
   onCancel,
 }: GuberniaEditFormProps) {
   const editor = usePostDocumentEditor(initialDescription ?? "", "Описание");
   const richTextFieldRef = useRef<RichTextFieldHandle>(null);
+  const imageUploaderRef = useRef<PostImageUploaderHandle>(null);
   const slugRef = useRef<HTMLInputElement>(null);
   const [slugValue, setSlugValue] = useState(initialSlug);
   const [saving, setSaving] = useState(false);
+  /** True while the images are uploading or one of them failed. */
+  const [imagesBlocked, setImagesBlocked] = useState(false);
   const [saveError, setSaveError] = useState("");
 
   // The address stays the first field of the form, so opening it focuses there.
@@ -244,6 +253,11 @@ function GuberniaEditForm({
 
   async function save() {
     if (!editor || saving) return;
+    const imageUploader = imageUploaderRef.current;
+    if (imageUploader?.isBlocked()) {
+      setSaveError("Дождитесь завершения загрузки изображений или удалите файлы с ошибкой.");
+      return;
+    }
     const nextSlug = slugValue.trim();
     if (!nextSlug) {
       setSaveError("Адрес страницы не может быть пустым.");
@@ -252,15 +266,21 @@ function GuberniaEditForm({
     // A blank editor means «no description»; the server also folds an
     // invisible document to null, so the field carries a document or null.
     const nextDescription = editor.getText().trim() ? editor.getJSON() : null;
+    // The ordered final set is sent every time: kept images in order plus new
+    // uploads. Omitting it would leave stored images untouched instead.
+    const imageIds = imageUploader?.getImageIds() ?? [];
 
     setSaving(true);
     setSaveError("");
+    // Until the save response lands, new uploads may already be claimed by the
+    // request; while this is set, cleanup leaves them to the server TTL sweep.
+    imageUploader?.setSaveInFlight(true);
     try {
       const response = await fetch(`/api/gubernias/${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ slug: nextSlug, description: nextDescription }),
+        body: JSON.stringify({ slug: nextSlug, description: nextDescription, imageIds }),
       });
       if (!response.ok) {
         setSaveError(await errorMessage(response, "Не удалось сохранить изменения. Попробуйте ещё раз."));
@@ -273,10 +293,15 @@ function GuberniaEditForm({
       } catch {
         /* Keep the locally entered address if the body is unreadable. */
       }
+      // The stored province now owns the new uploads: never clean them up as pending.
+      imageUploaderRef.current?.claimAll();
       onSaved(typeof data.slug === "string" && data.slug ? data.slug : nextSlug);
     } catch {
       setSaveError("Не удалось связаться с сервером.");
     } finally {
+      // A settled request no longer races cleanup: failed saves must fall back
+      // to normal pending deletion on cancel or unmount.
+      imageUploader?.setSaveInFlight(false);
       setSaving(false);
     }
   }
@@ -284,6 +309,14 @@ function GuberniaEditForm({
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void save();
+  }
+
+  function cancel() {
+    if (saving) return;
+    // Cancel discards only the new pending uploads; saved images are untouched
+    // and staged removals are dropped without being applied.
+    imageUploaderRef.current?.cleanupPending();
+    onCancel();
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLFormElement>) {
@@ -302,7 +335,7 @@ function GuberniaEditForm({
     // Inside the body Escape belongs to the editor, not to the whole form.
     if (editor && target instanceof Node && editor.view.dom.contains(target)) return;
     event.preventDefault();
-    onCancel();
+    cancel();
   }
 
   return (
@@ -321,17 +354,33 @@ function GuberniaEditForm({
         required
       />
       <span className={styles.descriptionLabel}>Описание</span>
-      <RichTextField ref={richTextFieldRef} editor={editor} hint={KEYBOARD_HINT} />
+      <RichTextField
+        ref={richTextFieldRef}
+        editor={editor}
+        hint="Описание необязательно. Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца."
+      />
+
+      <PostImageUploader
+        ref={imageUploaderRef}
+        initialImages={initialImages}
+        disabled={saving}
+        onBlockedChange={setImagesBlocked}
+      />
+
       {saveError ? (
         <p className={styles.error} role="alert">
           {saveError}
         </p>
       ) : null}
       <div className={styles.actions}>
-        <button className={styles.primaryButton} type="submit" disabled={saving || !editor}>
+        <button
+          className={styles.primaryButton}
+          type="submit"
+          disabled={saving || !editor || imagesBlocked}
+        >
           {saving ? "Сохраняем…" : "Сохранить"}
         </button>
-        <button className={styles.cancelButton} type="button" onClick={onCancel} disabled={saving}>
+        <button className={styles.cancelButton} type="button" onClick={cancel} disabled={saving}>
           Отмена
         </button>
       </div>

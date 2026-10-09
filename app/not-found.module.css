@@ -1,0 +1,368 @@
+.page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: clip;
+  font-family: Georgia, "Times New Roman", Times, serif;
+  color: #3a332a;
+  background-color: #ecdcc3;
+  background-image: url("../public/404/parchment.webp");
+  background-repeat: repeat;
+  background-size: auto;
+}
+
+.variantRed {
+  --accent-404: #a03a26;
+  --accent-404-strong: #7d2b1b;
+  /* Red is one bitmap composition cut from the supplied 1443×1009 reference, so every
+     piece is sized from a single factor: the smaller of "fill the width" and "fit the
+     height below the reference's 98px upper whitespace". That keeps the crops aligned
+     with each other — and keeps the home link clear of the bird. */
+  --red-k: min(calc(100vw / 1443), calc((100vh - 98px) / 911));
+  position: relative;
+}
+
+.variantGreen {
+  /* Green is one bitmap composition cut from the supplied 1444×990 reference; the deep
+     forest green of that illustration replaces the old olive accent colour. */
+  --accent-404: #3d4f33;
+  --accent-404-strong: #2b3a24;
+  /* Every green crop hangs off one factor: the smaller of "fill the width" and "fit the
+     reference height". The pieces then keep their positions from that reference on wide
+     and short windows instead of drifting apart. */
+  --green-k: min(calc(100vw / 1444), calc(100vh / 990));
+  position: relative;
+}
+
+/* Green variant: the same supplied reference cut into four rasters. Every green piece is
+   placed at its own position inside one 1444×990 stage scaled by --green-k — raster title
+   top-left, real home link centred under it, scene flush to the stage's right edge, two
+   decorative crops pinned to the window edges — so the pieces stay aligned with each
+   other and the middle never opens into a gap on wide windows. */
+.greenMain {
+  position: relative;
+  z-index: 1; /* above the corner crops */
+  flex: 0 0 auto;
+  width: calc(1444 * var(--green-k));
+  height: calc(990 * var(--green-k));
+  margin: 0 auto;
+}
+
+.greenCopy {
+  position: absolute;
+  z-index: 2; /* keep the raster headline over the scene where the pieces overlap */
+  top: calc(137 * var(--green-k));
+  left: calc(32 * var(--green-k));
+  width: calc(656 * var(--green-k));
+}
+
+.greenTitle {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Home link: a green plate in a gold double frame, centred under the headline, with a
+   small ornamental sprig on either side as in the reference. */
+.greenActions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(6 * var(--green-k));
+  margin: calc(9 * var(--green-k)) 0 0;
+}
+
+.greenActions::before,
+.greenActions::after {
+  content: "";
+  flex: 0 0 auto;
+  width: calc(40 * var(--green-k));
+  height: calc(36 * var(--green-k));
+  background-image:
+    linear-gradient(to right, transparent, #9a7b3f 12%, #9a7b3f 88%, transparent),
+    linear-gradient(45deg, transparent 46%, #9a7b3f 46%, #9a7b3f 54%, transparent 54%),
+    linear-gradient(-45deg, transparent 46%, #9a7b3f 46%, #9a7b3f 54%, transparent 54%);
+  background-size: 100% calc(2 * var(--green-k)), 60% 60%, 60% 60%;
+  background-position: center, left top, left bottom;
+  background-repeat: no-repeat;
+}
+
+.greenActions::after {
+  transform: scaleX(-1);
+}
+
+.greenButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(82 * var(--green-k));
+  padding: 0 calc(58 * var(--green-k));
+  border: 3px double #c5ab74;
+  border-radius: 0;
+  background: var(--accent-404);
+  color: #f7ecd6;
+  font-size: calc(27 * var(--green-k));
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  transition: background-color 0.18s ease;
+}
+
+.greenButton:hover {
+  background: var(--accent-404-strong);
+}
+
+.greenButton:focus-visible {
+  outline: 2px solid var(--accent-404-strong);
+  outline-offset: 3px;
+}
+
+/* Scene crop: flush to the stage's right edge, as in the reference. */
+.greenScene {
+  position: absolute;
+  z-index: 1;
+  top: calc(161 * var(--green-k));
+  right: 0;
+  width: calc(869 * var(--green-k));
+  margin: 0;
+  pointer-events: none;
+}
+
+.greenSceneImage {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* Decorative crops: pinned to the window edges on desktop, behind the copy. */
+.greenCorner {
+  position: fixed;
+  z-index: 0;
+  height: auto;
+  pointer-events: none;
+}
+
+.greenBottomLeft {
+  left: 0;
+  bottom: 0;
+  width: calc(484 * var(--green-k));
+}
+
+.greenTopRight {
+  right: 0;
+  top: 0;
+  width: calc(274 * var(--green-k));
+}
+
+@media (max-width: 860px) {
+  /* Single column: the copy leads and the scene follows, so the home link stays visible
+     without scrolling past the full height of the illustration. */
+  .greenMain {
+    width: min(1360px, 100% - 32px);
+    height: auto;
+    /* Clear the top-right crop above the headline and reserve room for the bottom-left
+       one below the scene. */
+    padding: min(32vw, 150px) 0
+      calc(min(46vw, 260px) * 0.667 + clamp(16px, 4vh, 32px));
+  }
+
+  .greenCopy {
+    position: static;
+    width: auto;
+    max-width: 30rem;
+    margin: 0 auto;
+  }
+
+  .greenActions {
+    display: block;
+    text-align: center;
+    margin-top: clamp(12px, 2.6vh, 22px);
+  }
+
+  .greenActions::before,
+  .greenActions::after {
+    display: none;
+  }
+
+  .greenButton {
+    min-height: 52px;
+    padding: 0 22px;
+    font-size: 17px;
+  }
+
+  .greenScene {
+    position: static;
+    width: 100%;
+    max-width: 32rem;
+    margin: clamp(18px, 4vh, 34px) auto 0;
+  }
+
+  /* Scroll with the page instead of floating over the copy while it moves. */
+  .greenCorner {
+    position: absolute;
+  }
+
+  .greenBottomLeft {
+    width: min(46vw, 260px);
+  }
+
+  .greenTopRight {
+    width: min(26vw, 130px);
+  }
+}
+
+/* Red variant only: one bitmap composition cut from the supplied 1443×1009 reference.
+   The left copy carries the raster headline over a real home link, the scene sits
+   bottom-right, and three decorative crops are pinned to the window edges. Every crop
+   is placed at its own position in that reference and scaled by --red-k, so the pieces
+   stay aligned with each other. */
+
+.redMain {
+  position: relative;
+  z-index: 1; /* above the corner crops */
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 555fr) minmax(0, 888fr);
+  align-items: stretch;
+}
+
+.redCopy {
+  grid-column: 1;
+  align-self: start;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(98 * var(--red-k)) 0 0 clamp(24px, 3.1vw, 56px);
+}
+
+.redTitle {
+  display: block;
+  width: min(100%, calc(519 * var(--red-k)));
+  height: auto;
+}
+
+/* Red headline is a bitmap: keep the equivalent text for screen readers and search. */
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.redActions {
+  margin: clamp(8px, 1.6vh, 22px) 0 0;
+}
+
+.redButton {
+  display: inline-flex;
+  align-items: center;
+  gap: clamp(10px, 1vw, 18px);
+  min-height: clamp(48px, 6.4vh, 64px);
+  padding: 0 clamp(22px, 2.8vw, 40px);
+  border: 2px solid #c5ab74;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 2px var(--accent-404), inset 0 0 0 3px #c5ab74;
+  background: var(--accent-404);
+  color: #f7ecd6;
+  font-size: clamp(17px, 1.55vw, 22px);
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.redButton:hover {
+  background: var(--accent-404-strong);
+  border-color: #dcc48d;
+}
+
+.redButton:focus-visible {
+  outline: 2px solid var(--accent-404-strong);
+  outline-offset: 3px;
+}
+
+.redButtonArrow {
+  font-size: 1.05em;
+  line-height: 1;
+}
+
+/* Scene crop: flush right, 37px above the window bottom (as in the reference). */
+.redScene {
+  position: absolute;
+  right: 0;
+  bottom: calc(37 * var(--red-k));
+  width: calc(888 * var(--red-k));
+  height: calc(887 * var(--red-k));
+  margin: 0;
+  pointer-events: none;
+}
+
+.redSceneImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* Decorative crops: pinned to the window edges on desktop, out of the way of the text. */
+.redCorner {
+  position: fixed;
+  z-index: 0;
+  height: auto;
+  pointer-events: none;
+}
+
+.redBottomLeft {
+  left: 0;
+  bottom: 0;
+  width: calc(765 * var(--red-k));
+}
+
+.redBottomRight,
+.redTopRight {
+  width: calc(279 * var(--red-k));
+}
+
+.redBottomRight {
+  right: 0;
+  bottom: 0;
+}
+
+.redTopRight {
+  right: 0;
+  top: 0;
+}
+
+@media (max-width: 860px) {
+  .redMain {
+    display: block;
+    /* Reserve the height the composition takes at the bottom of the page. */
+    padding-bottom: calc(924 * var(--red-k) + clamp(24px, 5vh, 48px));
+  }
+
+  .redCopy {
+    padding: clamp(16px, 3vh, 28px) clamp(20px, 5vw, 40px) 0;
+  }
+
+  .redTitle {
+    width: min(100%, 30rem);
+  }
+
+  .redActions {
+    margin-top: clamp(12px, 2vh, 20px);
+  }
+
+  /* Scroll with the page instead of floating over the copy while it moves. */
+  .redCorner {
+    position: absolute;
+  }
+}

@@ -67,7 +67,7 @@ COPY --from=frontend-build --chown=app:app /app/package.json /app/next.config.ts
 
 USER 10001:10001
 EXPOSE 3000
-# `/dokumenty` is a prerendered static page that does not depend on the backend;
+# `/dokumenty` is an informational page that does not depend on the backend;
 # `/` is SSR and legitimately fails while the backend is down.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:3000/dokumenty').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]

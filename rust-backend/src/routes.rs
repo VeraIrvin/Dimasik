@@ -29,6 +29,18 @@ fn exact_keys(payload: &Map<String, Value>, expected: &[&str]) -> bool {
     payload.len() == expected.len() && payload.keys().all(|key| expected.contains(&key.as_str()))
 }
 
+/// `true` when every submitted key is allowed; unlike [`exact_keys`] the
+/// allowed fields are optional.
+fn allowed_keys(payload: &Map<String, Value>, allowed: &[&str]) -> bool {
+    payload.keys().all(|key| allowed.contains(&key.as_str()))
+}
+
+/// Serializes an image list for the entity responses that carry a gallery
+/// next to their rich document (`{ body, images }`).
+fn images_json(images: &[store::PostImageRow]) -> Value {
+    Value::Array(images.iter().map(store::image_value).collect())
+}
+
 fn read_kind(value: Option<&Value>) -> ApiResult<String> {
     match value.and_then(Value::as_str) {
         Some(kind) if kind == "categories" || kind == "settlementTypes" => Ok(kind.to_string()),
@@ -87,8 +99,9 @@ pub async fn gubernia_patch(
     let payload = http::read_json_object(&headers, body, Some(GUBERNIA_REQUEST_BYTES)).await?;
     let slug = payload.get("slug").cloned().unwrap_or(Value::Null);
     let description = payload.get("description").cloned();
+    let image_ids = payload.get("imageIds").cloned();
     let canonical = state.canonical.clone();
-    let value = state
+    let (value, detached) = state
         .call(move |conn| {
             store::update_gubernia_publication(
                 conn,
@@ -96,9 +109,15 @@ pub async fn gubernia_patch(
                 &id,
                 &slug,
                 description.as_ref(),
+                image_ids.as_ref(),
             )
         })
         .await?;
+    // Images removed by this save are detached with their cleanup marker;
+    // their storage objects are deleted by the background sweep.
+    if detached {
+        spawn_image_sweep(&state);
+    }
     Ok(http::json_response(StatusCode::OK, value))
 }
 
@@ -325,9 +344,11 @@ pub async fn post_image_get(
     let Some(access) = access else {
         return Err(ApiError::not_found("Изображение не найдено."));
     };
-    if access.image.post_id.is_some() {
-        // Attached images follow their province: only published provinces are
-        // publicly readable, everything else stays invisible.
+    if access.image.is_attached() {
+        // Attached images follow their province — a post sits in one, a
+        // province gallery and a settlement reference belong to one too:
+        // only published provinces are publicly readable, everything else
+        // stays invisible.
         if !access.published {
             return Err(ApiError::not_found("Изображение не найдено."));
         }
@@ -369,8 +390,14 @@ pub async fn post_image_delete(
     let Some(access) = access else {
         return Err(ApiError::not_found("Изображение не найдено."));
     };
-    if access.image.post_id.is_some() {
-        return Err(ApiError::conflict("Изображение уже привязано к публикации."));
+    if access.image.is_attached() {
+        // Attached images belong to their page: they leave it through the
+        // form's replacement, never through the pending-upload cancel.
+        return Err(ApiError::conflict(if access.image.post_id.is_some() {
+            "Изображение уже привязано к публикации."
+        } else {
+            "Изображение привязано к странице."
+        }));
     }
     let Some(storage) = state.image_storage.clone() else {
         // Without storage the objects cannot be deleted; the row must stay so
@@ -428,9 +455,14 @@ pub async fn settlement_delete(
     http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
     let canonical = state.canonical.clone();
     let target = settlement_id.clone();
-    state
+    let detached = state
         .call(move |conn| store::delete_settlement(conn, &canonical, &id, &target))
         .await?;
+    // A deleted settlement detaches its reference gallery; the storage
+    // objects are deleted by the background sweep.
+    if detached {
+        spawn_image_sweep(&state);
+    }
     // The publication is already gone by the time the reference is cleaned up,
     // so a stale reference block must not turn a successful removal into a
     // failure the administration would retry: log it and report success.
@@ -455,21 +487,30 @@ pub async fn reference_patch(
 ) -> ApiResult<Response> {
     http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
     let payload = http::read_json_object(&headers, body, Some(MAX_POST_REQUEST_BYTES)).await?;
-    if !exact_keys(&payload, &["body"]) {
+    if !allowed_keys(&payload, &["body", "imageIds"]) || !payload.contains_key("body") {
         return Err(ApiError::bad_request("Ожидается документ содержимого страницы."));
     }
     let document = payload.get("body").cloned().unwrap_or(Value::Null);
-    let value = state
+    let image_ids = payload.get("imageIds").cloned();
+    let (body, images, detached) = state
         .call(move |conn| {
             let Some(settlement_id) =
                 store::find_published_settlement_id_by_slug(conn, &slug)?
             else {
                 return Err(ApiError::not_found("Населённый пункт не найден."));
             };
-            store::save_settlement_reference(conn, &settlement_id, &document)
+            store::save_settlement_reference(conn, &settlement_id, &document, image_ids.as_ref())
         })
         .await?;
-    Ok(http::json_response(StatusCode::OK, json!({ "body": value })))
+    // Images removed by this save are detached with their cleanup marker;
+    // their storage objects are deleted by the background sweep.
+    if detached {
+        spawn_image_sweep(&state);
+    }
+    Ok(http::json_response(
+        StatusCode::OK,
+        json!({ "body": body, "images": images_json(&images) }),
+    ))
 }
 
 pub async fn about_patch(
@@ -669,7 +710,10 @@ pub async fn internal_settlement_reference(
         })
         .await?;
     match value {
-        Some(body) => Ok(http::json_response(StatusCode::OK, json!({ "body": body }))),
+        Some((body, images)) => Ok(http::json_response(
+            StatusCode::OK,
+            json!({ "body": body, "images": images_json(&images) }),
+        )),
         None => Err(ApiError::not_found("Справка не найдена.")),
     }
 }

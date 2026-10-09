@@ -54,11 +54,21 @@ a { color: inherit; }
   width: min(760px, calc(100% - 48px));
   margin: clamp(64px, 12vh, 150px) auto 80px;
 }
+.content-page.content-page--with-header {
+  margin-top: clamp(48px, 9vh, 100px);
+}
+
 .content-page__eyebrow { font-size: 11px; letter-spacing: .17em; text-transform: uppercase; color: var(--muted); }
 .content-page__title { margin: 20px 0 24px; font-size: clamp(38px, 6vw, 72px); line-height: 1.08; font-weight: 450; letter-spacing: -.055em; }
 .content-page__text { max-width: 58ch; font-size: 17px; line-height: 1.7; color: #66635c; }
 .content-page__back { display: inline-block; margin-top: 46px; padding-bottom: 8px; border-bottom: 1px solid var(--ink); font-size: 14px; text-decoration: none; }
 .content-page__back:hover { color: #756958; border-color: #756958; }
+
+@media (max-width: 700px) {
+  .content-page.content-page--with-header {
+    margin-top: 38px;
+  }
+}
 
 @media (max-width: 640px) {
   .site-shell { min-height: 560px; }
@@ -66,7 +76,7 @@ a { color: inherit; }
   .site-brand { flex: 1 0 100%; gap: 8px; }
   .site-brand__mark { width: 38px; height: 38px; }
   .site-brand__name { font-size: 11.5px; line-height: 1.18; }
-  .site-nav { width: 100%; justify-content: flex-end; gap: 14px; padding-bottom: 3px; }
+  .site-nav { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; gap: 6px 14px; padding-bottom: 3px; }
   .site-nav a { font-size: 11px; white-space: nowrap; }
   .content-page__text { font-size: 15px; }
 }

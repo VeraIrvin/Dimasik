@@ -2,10 +2,6 @@
   margin-top: 0;
 }
 
-.eyebrow {
-  margin-top: 28px;
-}
-
 /* Local widening of the shared narrow content column: the header block stays
    as it is, but the portrait-and-text composition needs more room. */
 main.page {

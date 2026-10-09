@@ -7,6 +7,7 @@ import UyezdsMap from "@/components/UyezdsMap";
 import RichDocumentPreview from "@/components/RichDocumentPreview";
 import AdminCreationPanel from "./AdminCreationPanel";
 import PostFeed from "./PostFeed";
+import PostImageGallery from "./PostImageGallery";
 import ProvinceFilterControls, { type DistrictOption } from "./ProvinceFilterControls";
 import ProvinceQuickNavigation from "./ProvinceQuickNavigation";
 import styles from "./page.module.css";
@@ -165,16 +166,21 @@ export default function ProvinceExplorer({
         />
       </div>
 
-      {gubernia.description ? (
+      {gubernia.description || gubernia.images.length > 0 ? (
         <section className={styles.reference} aria-labelledby="province-reference-heading">
           <h2 className={styles.referenceHeading} id="province-reference-heading">
             Справочные сведения
           </h2>
-          <RichDocumentPreview
-            body={gubernia.description}
-            expanded={referenceExpanded}
-            onExpandedChange={setReferenceExpanded}
-          />
+          {gubernia.images.length > 0 ? (
+            <PostImageGallery images={gubernia.images} ariaLabel="Изображения губернии" />
+          ) : null}
+          {gubernia.description ? (
+            <RichDocumentPreview
+              body={gubernia.description}
+              expanded={referenceExpanded}
+              onExpandedChange={setReferenceExpanded}
+            />
+          ) : null}
         </section>
       ) : null}
 

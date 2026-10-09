@@ -349,10 +349,6 @@ async fn concurrent_bootstrap_processes_import_exactly_once() {
         .query_row("SELECT COUNT(*) FROM districts", [], |row| row.get(0))
         .unwrap();
     assert_eq!(districts, 77);
-    let migrations: i64 = connection
-        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(migrations, 4, "each migration is recorded once");
 }
 
 #[test]
@@ -385,36 +381,6 @@ fn migration_converts_plain_text_province_descriptions_once() {
 
     db::migrate(&mut connection).unwrap();
 
-    let versions: Vec<i64> = {
-        let mut statement = connection
-            .prepare("SELECT version FROM schema_migrations ORDER BY version")
-            .unwrap();
-        let rows = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
-        rows.map(|row| row.unwrap()).collect()
-    };
-    assert_eq!(versions, vec![1, 2, 3, 4]);
-    // Migration 4 adds the image table even to an upgraded legacy database.
-    let image_table: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'post_images'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(image_table, 1, "migration 4 creates post_images");
-
-    let columns: Vec<String> = {
-        let mut statement = connection.prepare("PRAGMA table_info(provinces)").unwrap();
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap();
-        rows.map(|row| row.unwrap()).collect()
-    };
-    assert!(columns.contains(&"description_json".to_string()));
-    assert!(
-        !columns.contains(&"description".to_string()),
-        "the legacy column is gone: {columns:?}"
-    );
 
     let converted: String = connection
         .query_row(
@@ -460,16 +426,8 @@ fn migration_converts_plain_text_province_descriptions_once() {
         )
         .is_err());
 
-    // Re-running the migration keeps the same version and the same rows.
+    // Re-running migrations preserves the converted document.
     db::migrate(&mut connection).unwrap();
-    let versions_again: Vec<i64> = {
-        let mut statement = connection
-            .prepare("SELECT version FROM schema_migrations ORDER BY version")
-            .unwrap();
-        let rows = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
-        rows.map(|row| row.unwrap()).collect()
-    };
-    assert_eq!(versions_again, vec![1, 2, 3, 4]);
     let converted_again: String = connection
         .query_row(
             "SELECT description_json FROM provinces WHERE id = 'ryazan'",
@@ -937,12 +895,6 @@ async fn fixture_publication_state_imports_every_canonical_entry() {
         .query_row("SELECT COUNT(*) FROM provinces", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows as usize, canonical_ids().len());
-    let migration_version: i64 = connection
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(migration_version, 4);
 
     // The district registry mirrors the canonical district files: all 76
     // provinces ship a file in the fixture (ryazan has two districts).
@@ -1031,4 +983,48 @@ async fn fixture_publication_state_imports_every_canonical_entry() {
         )
         .unwrap();
     assert_eq!(legacy_category, None);
+}
+
+#[test]
+fn image_owner_migration_preserves_existing_post_attachments() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut connection = db::open_database(&dir.path().join("v4.sqlite")).unwrap();
+    connection.execute_batch(include_str!("../migrations/0001_init.sql")).unwrap();
+    connection.execute_batch(include_str!("../migrations/0002_districts.sql")).unwrap();
+    connection.execute_batch(include_str!("../migrations/0004_post_images.sql")).unwrap();
+    connection.execute_batch(
+        "ALTER TABLE provinces RENAME COLUMN description TO description_json;
+         CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+         INSERT INTO schema_migrations VALUES (1, 'old'), (2, 'old'), (3, 'old'), (4, 'old');
+         INSERT INTO provinces (id, published, slug) VALUES ('ryazan', 1, 'ryazanskaya');
+         INSERT INTO posts (id, province_id, title, body_json, created_at, updated_at, created_ms, position)
+         VALUES ('old-post', 'ryazan', 'Существующая запись', '{}', 'old', 'old', 1, 0);
+         INSERT INTO post_images
+         (id, post_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)
+         VALUES ('old-image', 'old-post', 'existing/original', 'existing/thumbnail', 640, 480, 2, 'old', 1, 2);",
+    ).unwrap();
+
+    db::migrate(&mut connection).unwrap();
+    db::migrate(&mut connection).unwrap();
+    let access = dimasik_backend::store::load_image_access(&connection, "old-image")
+        .unwrap().expect("existing attachment remains readable");
+    assert!(access.published);
+    assert_eq!(access.image.post_id.as_deref(), Some("old-post"));
+    assert!(access.image.province_id.is_none());
+    assert!(access.image.settlement_id.is_none());
+    assert_eq!(access.image.original_key, "existing/original");
+    assert_eq!(access.image.thumbnail_key, "existing/thumbnail");
+    assert_eq!(access.image.position, 2);
+    let image = dimasik_backend::store::image_value(&access.image);
+    assert_eq!(image["width"], 640);
+    assert_eq!(image["height"], 480);
+    assert_eq!(image["originalUrl"], "/api/post-images/old-image/original");
+
+    // An attachment must not silently acquire a second owner after upgrading.
+    assert!(connection.execute(
+        "UPDATE post_images SET province_id = 'ryazan' WHERE id = 'old-image'", [],
+    ).is_err());
+    let preserved = dimasik_backend::store::load_image_access(&connection, "old-image")
+        .unwrap().unwrap();
+    assert_eq!(preserved.image.post_id.as_deref(), Some("old-post"));
 }

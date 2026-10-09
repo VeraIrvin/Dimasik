@@ -23,7 +23,7 @@ export type Settlement = {
   type: string | null;
 };
 
-/** An image attached to a post: dimensions plus same-origin API URLs. */
+/** Image metadata shared by posts, province references, and settlement references. */
 export type PostImage = {
   id: string;
   width: number;
@@ -56,6 +56,8 @@ export type PublishedGubernia = {
   slug: string;
   /** Rich-text reference block; null when the admin stored no description. */
   description: PostDocument | null;
+  /** Reference images in display order; always an array, empty when there are none. */
+  images: PostImage[];
   posts: GuberniaPost[];
   settlements: Settlement[];
 };
@@ -89,13 +91,23 @@ export type PublicationMetrics = {
 };
 
 /** Resolves a published province by slug, or null when it is unknown or unpublished. */
-export function getPublishedGuberniaBySlug(slug: string): Promise<PublishedGubernia | null> {
-  return readBackendJson<PublishedGubernia>(`/internal/gubernia/${encodeURIComponent(slug)}`);
+export async function getPublishedGuberniaBySlug(slug: string): Promise<PublishedGubernia | null> {
+  const gubernia = await readBackendJson<PublishedGubernia>(
+    `/internal/gubernia/${encodeURIComponent(slug)}`,
+  );
+  return gubernia ? normalizePublishedGubernia(gubernia) : null;
 }
 
 /** Resolves a settlement page slug, including legacy UUID addresses, or null. */
-export function getPublishedSettlementBySlug(slug: string): Promise<PublishedSettlement | null> {
-  return readBackendJson<PublishedSettlement>(`/internal/settlement/${encodeURIComponent(slug)}`);
+export async function getPublishedSettlementBySlug(
+  slug: string,
+): Promise<PublishedSettlement | null> {
+  const published = await readBackendJson<PublishedSettlement>(
+    `/internal/settlement/${encodeURIComponent(slug)}`,
+  );
+  return published
+    ? { ...published, gubernia: normalizePublishedGubernia(published.gubernia) }
+    : null;
 }
 
 export function getPublishedGeoData(): Promise<PublishedGeoData> {
@@ -105,4 +117,12 @@ export function getPublishedGeoData(): Promise<PublishedGeoData> {
 /** Read-only content totals; neither geometry nor post bodies leave the store. */
 export function getPublicationMetrics(): Promise<PublicationMetrics> {
   return readRequiredBackendJson<PublicationMetrics>("/internal/metrics");
+}
+
+/** Keeps callers safe while frontend and backend versions are rolled out together. */
+function normalizePublishedGubernia(gubernia: PublishedGubernia): PublishedGubernia {
+  return {
+    ...gubernia,
+    images: Array.isArray(gubernia.images) ? gubernia.images : [],
+  };
 }
