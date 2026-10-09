@@ -1,4 +1,4 @@
-name: Publish Docker images
+name: Deploy Dimasik
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: publish-images-${{ github.ref }}
+  group: dimasik-production
   cancel-in-progress: false
 
 jobs:
@@ -55,3 +55,39 @@ jobs:
           build-args: |
             BACKEND_URL=http://backend:8787
           tags: ghcr.io/verairvin/dimasik-${{ matrix.target }}:${{ github.sha }}
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: {}
+
+    steps:
+      - name: Deploy to VPS
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.DIMASIK_VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          SSH_DIR=$(mktemp -d)
+          trap 'rm -rf "$SSH_DIR"' EXIT
+          chmod 700 "$SSH_DIR"
+          printf '%s\n' "$SSH_KEY" > "$SSH_DIR/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$SSH_DIR/known_hosts"
+          chmod 600 "$SSH_DIR/key" "$SSH_DIR/known_hosts"
+
+          ssh \
+            -i "$SSH_DIR/key" \
+            -o UserKnownHostsFile="$SSH_DIR/known_hosts" \
+            -o StrictHostKeyChecking=yes \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "sudo -n /usr/local/sbin/deploy-dimasik $DEPLOY_SHA"
