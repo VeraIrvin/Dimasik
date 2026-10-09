@@ -132,7 +132,7 @@ export default function AdminAccess({ initialIsAdmin }: Props) {
           onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}
         >
           <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="admin-login-title">
-            <h2 id="admin-login-title">Вход</h2>
+            <h2 id="admin-login-title">Вход для администратора</h2>
             <form onSubmit={handleSubmit}>
               <label htmlFor="admin-login">Логин</label>
               <input
