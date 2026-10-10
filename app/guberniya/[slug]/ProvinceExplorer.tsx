@@ -153,19 +153,6 @@ export default function ProvinceExplorer({
         <ProvinceFilterControls idPrefix="province-toolbar" compact {...filterControlsProps} />
       </ProvinceQuickNavigation>
 
-      <div className={styles.provinceMap} id="province-map">
-        <UyezdsMap
-          guberniaId={gubernia.id}
-          guberniaName={gubernia.name}
-          settlements={provinceSettlements}
-          selectedDistrictId={districtId}
-          selectedSettlementId={settlementId}
-          onDistrictSelect={selectDistrict}
-          onSettlementOpen={openSettlement}
-          onDistrictsLoad={updateDistricts}
-        />
-      </div>
-
       {gubernia.description || gubernia.images.length > 0 ? (
         <section className={styles.reference} aria-labelledby="province-reference-heading">
           <h2 className={styles.referenceHeading} id="province-reference-heading">
@@ -183,6 +170,19 @@ export default function ProvinceExplorer({
           ) : null}
         </section>
       ) : null}
+
+      <div className={styles.provinceMap} id="province-map">
+        <UyezdsMap
+          guberniaId={gubernia.id}
+          guberniaName={gubernia.name}
+          settlements={provinceSettlements}
+          selectedDistrictId={districtId}
+          selectedSettlementId={settlementId}
+          onDistrictSelect={selectDistrict}
+          onSettlementOpen={openSettlement}
+          onDistrictsLoad={updateDistricts}
+        />
+      </div>
 
       {isAdmin ? (
         <div className={styles.composer}>
