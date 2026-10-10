@@ -11,9 +11,10 @@ use crate::content::{legacy_description_json, normalize_post_document};
 use crate::db;
 use crate::geo::{CanonicalProvinces, DistrictCollection, GeoRuntime};
 use crate::store::{
-    default_settings_lists, SettingsLists, MAX_ARCHIVE_REFERENCE_LENGTH, MAX_ID_LENGTH,
-    MAX_SETTLEMENT_NAME_LENGTH, MAX_SETTINGS_ITEMS, MAX_SETTINGS_NAME_CHARACTERS,
-    MAX_STORED_SETTING_NAME_LENGTH, MAX_TITLE_LENGTH, MAX_YEAR_LENGTH,
+    default_settings_lists, SettingsLists, MAX_ARCHIVE_REFERENCE_LENGTH, MAX_AUTHOR_LENGTH,
+    MAX_ID_LENGTH, MAX_SETTLEMENT_NAME_LENGTH, MAX_SETTINGS_ITEMS,
+    MAX_SETTINGS_NAME_CHARACTERS, MAX_STORED_SETTING_NAME_LENGTH, MAX_TITLE_LENGTH,
+    MAX_YEAR_LENGTH,
 };
 use crate::util::{
     effective_settlement_url, is_valid_settlement_url, is_valid_slug, iso_now,
@@ -56,6 +57,7 @@ struct ImportPost {
     settlement_id: Option<String>,
     year: String,
     archive_reference: String,
+    author: String,
     category: Option<String>,
 }
 
@@ -576,7 +578,7 @@ fn parse_stored_posts(value: Option<&Value>, gubernia_id: &str) -> Result<Vec<Im
 }
 
 fn parse_stored_post(value: &Value, gubernia_id: &str) -> Result<ImportPost, String> {
-    const STORED_POST_KEYS: [&str; 10] = [
+    const STORED_POST_KEYS: [&str; 11] = [
         "id",
         "title",
         "body",
@@ -586,6 +588,7 @@ fn parse_stored_post(value: &Value, gubernia_id: &str) -> Result<ImportPost, Str
         "settlementId",
         "year",
         "archiveReference",
+        "author",
         "category",
     ];
     let Value::Object(post) = value else {
@@ -639,6 +642,12 @@ fn parse_stored_post(value: &Value, gubernia_id: &str) -> Result<ImportPost, Str
         gubernia_id,
         "archive reference",
     )?;
+    let author = parse_stored_optional_text(
+        post.get("author"),
+        MAX_AUTHOR_LENGTH,
+        gubernia_id,
+        "author",
+    )?;
     let category = match post.get("category") {
         None | Some(Value::Null) => None,
         Some(Value::String(category))
@@ -666,6 +675,7 @@ fn parse_stored_post(value: &Value, gubernia_id: &str) -> Result<ImportPost, Str
         year,
         archive_reference,
         category,
+        author,
     })
 }
 
@@ -1032,8 +1042,8 @@ fn write_sources(
         for (position, post) in entry.posts.iter().enumerate() {
             transaction
                 .execute(
-                    "INSERT INTO posts (id, province_id, title, body_json, created_at, updated_at, created_ms, position, uyezd_id, settlement_id, year, archive_reference, category)\n\
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    "INSERT INTO posts (id, province_id, title, body_json, created_at, updated_at, created_ms, position, uyezd_id, settlement_id, year, archive_reference, category, author)\n\
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     params![
                         post.id,
                         id,
@@ -1048,6 +1058,7 @@ fn write_sources(
                         post.year,
                         post.archive_reference,
                         post.category.as_deref(),
+                        post.author,
                     ],
                 )
                 .map_err(|error| error.to_string())?;

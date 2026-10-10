@@ -20,6 +20,7 @@ pub const MAX_ID_LENGTH: usize = 100;
 pub const MAX_SETTLEMENT_NAME_LENGTH: usize = 200;
 pub const MAX_YEAR_LENGTH: usize = 100;
 pub const MAX_ARCHIVE_REFERENCE_LENGTH: usize = 300;
+pub const MAX_AUTHOR_LENGTH: usize = 300;
 /// At most ten uploaded images may be attached to one owner: a publication,
 /// a province description or a settlement reference block.
 pub const MAX_POST_IMAGES: usize = 10;
@@ -556,58 +557,89 @@ pub fn get_settlement_reference(
     Ok(Some((body, images)))
 }
 
-/// Saves a settlement reference block: the body and, when `imageIds` is
-/// present, the full ordered attachment set change in one transaction, so a
-/// failed claim never leaves a partial body or a half-attached gallery. An
-/// absent field keeps the stored images; a structurally empty document is
-/// valid exactly while the saved block keeps at least one image (the same
-/// images-only rule posts use), so body-only callers keep the previous
-/// behaviour and an empty text without photos stays rejected.
+/// Atomically saves an optional settlement rename and/or reference block.
+/// A name-only save preserves the current body and gallery. Reference saves
+/// require `body`; `imageIds` cannot be supplied alone. Explicitly clearing
+/// both reference text and its final gallery remains invalid.
 ///
-/// Returns the stored body, the saved images in order, and whether the save
-/// detached persisted images, i.e. whether the storage sweep has to run after
-/// the commit.
+/// Returns the normalized current name, current optional body, saved images,
+/// and whether persisted images were detached.
 pub fn save_settlement_reference(
     connection: &mut Connection,
     settlement_id: &str,
-    value: &Value,
+    name: Option<&Value>,
+    value: Option<&Value>,
     image_ids: Option<&Value>,
-) -> ApiResult<(Value, Vec<PostImageRow>, bool)> {
+) -> ApiResult<(String, Option<Value>, Vec<PostImageRow>, bool)> {
     if !is_valid_settlement_id(settlement_id) {
         return Err(ApiError::internal(
             "Settlement reference storage received an invalid settlement id.",
         ));
     }
-    let body = validate_optional_post_body(value)?;
+    if name.is_none() && value.is_none() {
+        return Err(bad("Ожидается название или документ содержимого страницы."));
+    }
+    if value.is_none() && image_ids.is_some() {
+        return Err(bad("Изображения можно сохранить только вместе с документом содержимого страницы."));
+    }
+    let name = name.map(validate_settlement_name).transpose()?;
+    let body = value.map(validate_optional_post_body).transpose()?;
     let replacement = validate_optional_image_ids(image_ids)?;
     let now_ms = now_unix() * 1_000;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current_name: String = transaction
+        .query_row(
+            "SELECT name FROM settlements WHERE id = ?1",
+            params![settlement_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("Населённый пункт не найден."))?;
     let current = load_owner_images(&transaction, ImageOwner::Settlement, settlement_id)?;
-    let (images, detached) = match &replacement {
-        Some(image_ids) => {
-            let detached = replace_images(
-                &transaction,
-                ImageOwner::Settlement,
-                settlement_id,
-                image_ids,
-                &current,
-                now_ms,
-            )?;
-            (
-                load_owner_images(&transaction, ImageOwner::Settlement, settlement_id)?,
-                detached,
-            )
+    let (images, detached) = if body.is_some() {
+        match &replacement {
+            Some(image_ids) => {
+                let detached = replace_images(
+                    &transaction,
+                    ImageOwner::Settlement,
+                    settlement_id,
+                    image_ids,
+                    &current,
+                    now_ms,
+                )?;
+                (
+                    load_owner_images(&transaction, ImageOwner::Settlement, settlement_id)?,
+                    detached,
+                )
+            }
+            None => (current, false),
         }
-        None => (current, false),
+    } else {
+        (current, false)
     };
-    let body = resolve_post_body(body, !images.is_empty())?;
-    transaction.execute(
-        "INSERT INTO settlement_references (settlement_id, body_json) VALUES (?1, ?2)\n\
-         ON CONFLICT(settlement_id) DO UPDATE SET body_json = excluded.body_json",
-        params![settlement_id, serde_json::to_string(&body)?],
-    )?;
+    let stored_body = if let Some(body) = body {
+        let body = resolve_post_body(body, !images.is_empty())?;
+        transaction.execute(
+            "INSERT INTO settlement_references (settlement_id, body_json) VALUES (?1, ?2)\n\
+             ON CONFLICT(settlement_id) DO UPDATE SET body_json = excluded.body_json",
+            params![settlement_id, serde_json::to_string(&body)?],
+        )?;
+        Some(body)
+    } else {
+        get_settlement_reference(&transaction, settlement_id)?.map(|(body, _)| body)
+    };
+    let name_changed = name
+        .as_deref()
+        .is_some_and(|requested| requested != current_name.as_str());
+    let saved_name = name.unwrap_or(current_name);
+    if name_changed {
+        transaction.execute(
+            "UPDATE settlements SET name = ?1 WHERE id = ?2",
+            params![saved_name, settlement_id],
+        )?;
+    }
     transaction.commit()?;
-    Ok((body, images, detached))
+    Ok((saved_name, stored_body, images, detached))
 }
 
 pub fn remove_settlement_reference(
@@ -818,13 +850,14 @@ pub struct PostRow {
     pub settlement_id: Option<String>,
     pub year: String,
     pub archive_reference: String,
+    pub author: String,
     pub category: Option<String>,
     /// Attached images in stored order; filled by the loaders and by
     /// `create_post`/`update_post`.
     pub images: Vec<PostImageRow>,
 }
 
-const POST_COLUMNS: &str = "id, province_id, title, body_json, created_at, updated_at, created_ms, uyezd_id, settlement_id, year, archive_reference, category";
+const POST_COLUMNS: &str = "id, province_id, title, body_json, created_at, updated_at, created_ms, uyezd_id, settlement_id, year, archive_reference, category, author";
 const IMAGE_COLUMNS: &str = "id, post_id, province_id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms";
 const IMAGE_COLUMNS_I: &str = "i.id, i.post_id, i.province_id, i.settlement_id, i.original_key, i.thumbnail_key, i.width, i.height, i.position, i.created_at, i.created_ms, i.attached_ms";
 /// SQL guard that narrows a statement to rows no post, province or settlement
@@ -848,6 +881,7 @@ fn post_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PostRow> {
         year: row.get(9)?,
         archive_reference: row.get(10)?,
         category: row.get(11)?,
+        author: row.get(12)?,
         images: Vec::new(),
     })
 }
@@ -1007,6 +1041,7 @@ pub fn post_value(post: &PostRow) -> ApiResult<Value> {
         "archiveReference".to_string(),
         Value::String(post.archive_reference.clone()),
     );
+    out.insert("author".to_string(), Value::String(post.author.clone()));
     out.insert(
         "category".to_string(),
         match &post.category {
@@ -2052,9 +2087,10 @@ pub fn create_post(
     let year = normalize_optional_text(payload.get("year"), "Год", MAX_YEAR_LENGTH)?;
     let archive_reference = normalize_optional_text(
         payload.get("archiveReference"),
-        "Архивный шифр",
+        "Источник",
         MAX_ARCHIVE_REFERENCE_LENGTH,
     )?;
+    let author = normalize_optional_text(payload.get("author"), "Автор", MAX_AUTHOR_LENGTH)?;
 
     let timestamp = iso_now();
     let mut post = PostRow {
@@ -2070,6 +2106,7 @@ pub fn create_post(
         year,
         archive_reference,
         category: Some(category),
+        author,
         images: Vec::new(),
     };
     let position: i64 = transaction.query_row(
@@ -2078,8 +2115,8 @@ pub fn create_post(
         |row| row.get(0),
     )?;
     transaction.execute(
-        "INSERT INTO posts (id, province_id, title, body_json, created_at, updated_at, created_ms, position, uyezd_id, settlement_id, year, archive_reference, category)\n\
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO posts (id, province_id, title, body_json, created_at, updated_at, created_ms, position, uyezd_id, settlement_id, year, archive_reference, category, author)\n\
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             post.id,
             post.province_id,
@@ -2094,6 +2131,7 @@ pub fn create_post(
             post.year,
             post.archive_reference,
             post.category,
+            post.author,
         ],
     )?;
     // Claimed in the same transaction: a duplicate, unknown, expired or
@@ -2173,9 +2211,10 @@ pub fn update_post(
     let year = normalize_optional_text(payload.get("year"), "Год", MAX_YEAR_LENGTH)?;
     let archive_reference = normalize_optional_text(
         payload.get("archiveReference"),
-        "Архивный шифр",
+        "Источник",
         MAX_ARCHIVE_REFERENCE_LENGTH,
     )?;
+    let author = normalize_optional_text(payload.get("author"), "Автор", MAX_AUTHOR_LENGTH)?;
 
     let updated = PostRow {
         id: post.id.clone(),
@@ -2190,6 +2229,7 @@ pub fn update_post(
         year,
         archive_reference,
         category,
+        author,
         // The replacement's committed order, or the untouched attachments of
         // a request that omitted `imageIds` (they survive a cross-province
         // move because the post keeps its id).
@@ -2199,8 +2239,8 @@ pub fn update_post(
     if target_gubernia_id == gubernia_id {
         transaction.execute(
             "UPDATE posts SET title = ?1, body_json = ?2, uyezd_id = ?3, settlement_id = ?4,\n\
-             year = ?5, archive_reference = ?6, category = ?7, updated_at = ?8\n\
-             WHERE id = ?9 AND province_id = ?10",
+             year = ?5, archive_reference = ?6, category = ?7, updated_at = ?8, author = ?9\n\
+             WHERE id = ?10 AND province_id = ?11",
             params![
                 updated.title,
                 updated.body_json,
@@ -2210,6 +2250,7 @@ pub fn update_post(
                 updated.archive_reference,
                 updated.category,
                 updated.updated_at,
+                updated.author,
                 updated.id,
                 gubernia_id,
             ],
@@ -2245,8 +2286,8 @@ pub fn update_post(
         transaction.execute(
             "UPDATE posts SET province_id = ?1, title = ?2, body_json = ?3, uyezd_id = ?4,\n\
              settlement_id = ?5, year = ?6, archive_reference = ?7, category = ?8,\n\
-             updated_at = ?9, position = ?10\n\
-             WHERE id = ?11 AND province_id = ?12",
+             updated_at = ?9, position = ?10, author = ?11\n\
+             WHERE id = ?12 AND province_id = ?13",
             params![
                 updated.province_id,
                 updated.title,
@@ -2258,6 +2299,7 @@ pub fn update_post(
                 updated.category,
                 updated.updated_at,
                 position,
+                updated.author,
                 updated.id,
                 gubernia_id,
             ],
@@ -2421,6 +2463,34 @@ mod tests {
             validate_settlement_name(&json!("")).unwrap_err().message,
             "Название населённого пункта не должно быть пустым."
         );
+        assert_eq!(
+            validate_settlement_name(&Value::Null).unwrap_err().message,
+            "Название населённого пункта должно быть строкой."
+        );
+        assert_eq!(
+            validate_settlement_name(&json!("  Новое Село  ")).unwrap(),
+            "Новое Село"
+        );
+        assert_eq!(
+            validate_settlement_name(&json!(" ".repeat(201)))
+                .unwrap_err()
+                .message,
+            "Название населённого пункта не должно быть пустым."
+        );
+        assert_eq!(
+            validate_settlement_name(&json!("а".repeat(200))).unwrap(),
+            "а".repeat(200)
+        );
+        assert_eq!(
+            validate_settlement_name(&json!(format!("{}😀", "а".repeat(198)))).unwrap(),
+            format!("{}😀", "а".repeat(198))
+        );
+        assert_eq!(
+            validate_settlement_name(&json!(format!("{}😀", "а".repeat(199))))
+                .unwrap_err()
+                .message,
+            "Название населённого пункта должно быть не длиннее 200 символов."
+        );
     }
 
     #[test]
@@ -2505,6 +2575,9 @@ mod tests {
             .unwrap();
         connection
             .execute_batch(include_str!("../migrations/0005_entity_images.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/0006_post_author.sql"))
             .unwrap();
         connection
     }
@@ -3378,14 +3451,16 @@ mod tests {
             }]
         });
 
-        let (body, images, detached) = save_settlement_reference(
+        let (name, body, images, detached) = save_settlement_reference(
             &mut connection,
             "settlement-1",
-            &empty,
+            None,
+            Some(&empty),
             Some(&json!(["img-ref"])),
         )
         .unwrap();
-        assert_eq!(body, plain_text_to_document(""));
+        assert_eq!(name, "Село");
+        assert_eq!(body, Some(plain_text_to_document("")));
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].settlement_id.as_deref(), Some("settlement-1"));
         assert!(!detached);
@@ -3396,9 +3471,11 @@ mod tests {
         assert_eq!(read_body, plain_text_to_document(""));
         assert_eq!(read_images.len(), 1);
 
-        // A body-only save keeps the gallery and the stored text...
-        let (_, images, detached) =
-            save_settlement_reference(&mut connection, "settlement-1", &text, None).unwrap();
+        // A body-only save keeps the name and gallery and stores the text...
+        let (name, _, images, detached) =
+            save_settlement_reference(&mut connection, "settlement-1", None, Some(&text), None)
+                .unwrap();
+        assert_eq!(name, "Село");
         assert_eq!(images.len(), 1);
         assert!(!detached);
         // ...so an empty document that would remove the last image is still
@@ -3406,7 +3483,8 @@ mod tests {
         let rejected = save_settlement_reference(
             &mut connection,
             "settlement-1",
-            &empty,
+            Some(&json!("Несохранённое имя")),
+            Some(&empty),
             Some(&json!([])),
         )
         .unwrap_err();
@@ -3416,13 +3494,22 @@ mod tests {
             .unwrap();
         assert_eq!(kept_body, text);
         assert_eq!(kept_images.len(), 1, "the failed save detached nothing");
+        let kept_name: String = connection
+            .query_row(
+                "SELECT name FROM settlements WHERE id = 'settlement-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_name, "Село", "failed reference save rolls back rename");
 
         // A body that keeps text may drop the gallery, and only then is the
         // row handed to the cleanup sweep.
-        let (_, images, detached) = save_settlement_reference(
+        let (_, _, images, detached) = save_settlement_reference(
             &mut connection,
             "settlement-1",
-            &text,
+            None,
+            Some(&text),
             Some(&json!([])),
         )
         .unwrap();
@@ -3436,5 +3523,40 @@ mod tests {
             .unwrap()
             .iter()
             .any(|image| image.id == "img-ref"));
+
+        // Name-only saves trim through the shared validator and preserve the
+        // current reference. Invalid names cannot modify either field.
+        let (name, body, images, detached) = save_settlement_reference(
+            &mut connection,
+            "settlement-1",
+            Some(&json!("  Новое Село  ")),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(name, "Новое Село");
+        assert_eq!(body, Some(text.clone()));
+        assert!(images.is_empty());
+        assert!(!detached);
+        let invalid = save_settlement_reference(
+            &mut connection,
+            "settlement-1",
+            Some(&json!(" ".repeat(MAX_SETTLEMENT_NAME_LENGTH + 1))),
+            Some(&json!({ "type": "invalid" })),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            invalid.message,
+            "Название населённого пункта не должно быть пустым."
+        );
+        let stored_name: String = connection
+            .query_row(
+                "SELECT name FROM settlements WHERE id = 'settlement-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_name, "Новое Село");
     }
 }

@@ -21,6 +21,7 @@ import styles from "./ProvincePostEditor.module.css";
 
 const TITLE_MAX_LENGTH = 1000;
 const MAX_YEAR_LENGTH = 100;
+const MAX_AUTHOR_LENGTH = 300;
 const MAX_ARCHIVE_REFERENCE_LENGTH = 300;
 
 type ProvincePostEditorProps = {
@@ -54,6 +55,7 @@ export default function ProvincePostEditor({
   const districtId = useId();
   const settlementId = useId();
   const yearId = useId();
+  const authorId = useId();
   const archiveReferenceId = useId();
   const categoryId = useId();
 
@@ -78,6 +80,7 @@ export default function ProvincePostEditor({
   const [selectedSettlementId, setSelectedSettlementId] = useState(
     post?.settlementId ?? defaultSettlement?.id ?? "",
   );
+  const [author, setAuthor] = useState(post?.author ?? "");
   const [year, setYear] = useState(post?.year ?? "");
   const [archiveReference, setArchiveReference] = useState(post?.archiveReference ?? "");
   const [saving, setSaving] = useState(false);
@@ -163,6 +166,7 @@ export default function ProvincePostEditor({
     setSelectedProvinceId(guberniaId);
     setSelectedDistrictId(defaultDistrictId);
     setSelectedSettlementId(defaultSettlement?.id ?? "");
+    setAuthor("");
     setYear("");
     setArchiveReference("");
     editor?.commands.clearContent();
@@ -246,6 +250,7 @@ export default function ProvincePostEditor({
             category,
             uyezdId: nextDistrictId || null,
             settlementId: selectedSettlementId || null,
+            author: author.trim(),
             year: year.trim(),
             archiveReference: archiveReference.trim(),
             // The ordered final set is sent every time; an edit that only moved
@@ -285,6 +290,7 @@ export default function ProvincePostEditor({
         setCategory("");
         setSelectedDistrictId(defaultDistrictId);
         setSelectedSettlementId(defaultSettlement?.id ?? "");
+        setAuthor("");
         setYear("");
         setArchiveReference("");
         editor.commands.clearContent();
@@ -468,7 +474,23 @@ export default function ProvincePostEditor({
           </div>
 
           <div className={styles.metaField}>
-            <label htmlFor={archiveReferenceId}>Архивный шифр</label>
+            <label htmlFor={authorId}>Автор</label>
+            <input
+              id={authorId}
+              name="author"
+              className={styles.metaInput}
+              value={author}
+              maxLength={MAX_AUTHOR_LENGTH}
+              autoComplete="off"
+              onChange={(event) => {
+                setAuthor(event.target.value);
+                setStatus("");
+              }}
+            />
+          </div>
+
+          <div className={styles.metaField}>
+            <label htmlFor={archiveReferenceId}>Источник</label>
             <input
               id={archiveReferenceId}
               name="archiveReference"

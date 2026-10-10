@@ -27,6 +27,130 @@ fn prepare_error(config: &Config) -> String {
     }
 }
 
+fn legacy_post_table_document() -> Value {
+    json!({
+        "type": "doc",
+        "content": [
+            { "type": "paragraph", "content": [{ "type": "text", "text": "Перед таблицей" }] },
+            {
+                "type": "table",
+                "content": [
+                    {
+                        "type": "tableRow",
+                        "content": [
+                            {
+                                "type": "tableHeader",
+                                "attrs": {
+                                    "colspan": 1,
+                                    "rowspan": 2,
+                                    "colwidth": [180],
+                                    "align": "center"
+                                },
+                                "content": [{
+                                    "type": "paragraph",
+                                    "content": [{
+                                        "type": "text",
+                                        "text": "Год",
+                                        "marks": [{ "type": "bold" }]
+                                    }]
+                                }]
+                            },
+                            {
+                                "type": "tableHeader",
+                                "attrs": { "align": null },
+                                "content": [{ "type": "paragraph" }]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "tableRow",
+                        "content": [{
+                            "type": "tableCell",
+                            "attrs": { "colwidth": [0], "align": "right" },
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{
+                                    "type": "text",
+                                    "text": "1900",
+                                    "marks": [{ "type": "italic" }]
+                                }]
+                            }]
+                        }]
+                    }
+                ]
+            }
+        ]
+    })
+}
+
+fn canonical_post_table_document() -> Value {
+    let mut document = legacy_post_table_document();
+    document["content"][1]["content"][0]["content"][0]["attrs"] =
+        json!({ "colspan": 1, "rowspan": 2, "colwidth": [180], "align": "center" });
+    document["content"][1]["content"][0]["content"][1]["attrs"] =
+        json!({ "colspan": 1, "rowspan": 1, "colwidth": null, "align": null });
+    document["content"][1]["content"][1]["content"][0]["attrs"] =
+        json!({ "colspan": 1, "rowspan": 1, "colwidth": [0], "align": "right" });
+    document
+}
+
+fn legacy_about_table_document() -> Value {
+    json!({
+        "type": "doc",
+        "content": [{
+            "type": "table",
+            "content": [
+                {
+                    "type": "tableRow",
+                    "content": [{
+                        "type": "tableHeader",
+                        "attrs": {
+                            "colspan": 2,
+                            "colwidth": [96, 144],
+                            "align": "left"
+                        },
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": "О проекте" }]
+                        }]
+                    }]
+                },
+                {
+                    "type": "tableRow",
+                    "content": [
+                        {
+                            "type": "tableCell",
+                            "content": [{ "type": "paragraph" }]
+                        },
+                        {
+                            "type": "tableCell",
+                            "attrs": {
+                                "colspan": 1,
+                                "rowspan": 1,
+                                "colwidth": null,
+                                "align": null
+                            },
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "История" }]
+                            }]
+                        }
+                    ]
+                }
+            ]
+        }]
+    })
+}
+
+fn canonical_about_table_document() -> Value {
+    let mut document = legacy_about_table_document();
+    document["content"][0]["content"][0]["content"][0]["attrs"] =
+        json!({ "colspan": 2, "rowspan": 1, "colwidth": [96, 144], "align": "left" });
+    document["content"][0]["content"][1]["content"][0]["attrs"] =
+        json!({ "colspan": 1, "rowspan": 1, "colwidth": null, "align": null });
+    document
+}
+
 #[tokio::test]
 async fn second_prepare_against_the_same_database_keeps_state() {
     let env = TestEnv::new();
@@ -144,6 +268,40 @@ async fn invalid_publication_state_rolls_back_and_can_be_retried() {
     write_json(&publication_path, &value);
 
     prepare(&config).expect("retry with the fixed fixture succeeds");
+}
+
+#[tokio::test]
+async fn import_accepts_author_defaults_missing_and_rejects_oversized_values() {
+    let dir = standard_fixture_dir();
+    let publication_path = dir.path().join("data/gubernia-publications.json");
+    let mut value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
+    value["gubernias"]["ryazan"]["posts"][0]["author"] = json!("  Летописец  ");
+    value["gubernias"]["ryazan"]["posts"][1]["author"] = json!("я".repeat(301));
+    write_json(&publication_path, &value);
+    let config = base_config(dir.path());
+    let error = prepare_error(&config);
+    assert!(error.contains("invalid post author"), "got: {error}");
+    let connection = db::open_database(&config.database_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM posts", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "invalid author rolls the import back"
+    );
+
+    value["gubernias"]["ryazan"]["posts"][1]["author"] = Value::Null;
+    write_json(&publication_path, &value);
+    let state = prepare(&config).expect("valid author imports");
+    let app = build_router(state);
+    let imported = send(
+        &app,
+        request(Method::GET, "/internal/gubernia/ryazanskaya", None, None),
+    )
+    .await;
+    assert_eq!(imported.body["posts"][0]["author"], "  Летописец  ");
+    assert_eq!(imported.body["posts"][1]["author"], "");
 }
 
 #[tokio::test]
@@ -478,6 +636,122 @@ async fn integral_float_ordered_list_starts_import_as_integers() {
 }
 
 #[tokio::test]
+async fn legacy_post_and_about_tables_import_canonically_and_survive_reopen() {
+    let dir = standard_fixture_dir();
+    let publication_path = dir.path().join("data/gubernia-publications.json");
+    let mut publications: Value =
+        serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
+    publications["gubernias"]["ryazan"]["posts"][0]["body"] = legacy_post_table_document();
+    write_json(&publication_path, &publications);
+
+    let about_path = dir.path().join("data/about-content.json");
+    let mut about: Value =
+        serde_json::from_str(&std::fs::read_to_string(&about_path).unwrap()).unwrap();
+    about["body"] = legacy_about_table_document();
+    write_json(&about_path, &about);
+
+    let config = base_config(dir.path());
+    let state = prepare(&config).expect("legacy table fixtures import");
+    let app = build_router(state);
+    let expected_post = canonical_post_table_document();
+    let expected_about = canonical_about_table_document();
+
+    let gubernia = send(
+        &app,
+        request(Method::GET, "/internal/gubernia/ryazanskaya", None, None),
+    )
+    .await;
+    assert_eq!(gubernia.status, StatusCode::OK);
+    assert_eq!(gubernia.body["posts"][0]["body"], expected_post);
+    let imported_about = send(&app, request(Method::GET, "/internal/about", None, None)).await;
+    assert_eq!(imported_about.status, StatusCode::OK);
+    assert_eq!(imported_about.body["body"], expected_about);
+
+    drop(app);
+    let reopened = TestEnv::router_for_config(&config);
+    let gubernia = send(
+        &reopened,
+        request(Method::GET, "/internal/gubernia/ryazanskaya", None, None),
+    )
+    .await;
+    assert_eq!(gubernia.body["posts"][0]["body"], expected_post);
+    let imported_about = send(
+        &reopened,
+        request(Method::GET, "/internal/about", None, None),
+    )
+    .await;
+    assert_eq!(imported_about.body["body"], expected_about);
+}
+
+#[test]
+fn malformed_legacy_table_fixtures_are_rejected_atomically() {
+    let post_dir = standard_fixture_dir();
+    let publication_path = post_dir.path().join("data/gubernia-publications.json");
+    let mut publications: Value =
+        serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
+    let mut invalid_attrs = legacy_post_table_document();
+    invalid_attrs["content"][1]["content"][1]["content"][0]["attrs"]["colwidth"] =
+        json!([100, 200]);
+    publications["gubernias"]["ryazan"]["posts"][0]["body"] = invalid_attrs;
+    write_json(&publication_path, &publications);
+    let post_config = base_config(post_dir.path());
+    let error = prepare_error(&post_config);
+    assert!(error.contains("invalid post body"), "got: {error}");
+    let connection = db::open_database(&post_config.database_path).unwrap();
+    let provinces: i64 = connection
+        .query_row("SELECT COUNT(*) FROM provinces", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(provinces, 0, "invalid table attrs roll back the import");
+    assert_eq!(db::imported_at(&connection).unwrap(), None, "no marker");
+
+    let about_dir = standard_fixture_dir();
+    let about_path = about_dir.path().join("data/about-content.json");
+    let mut about: Value =
+        serde_json::from_str(&std::fs::read_to_string(&about_path).unwrap()).unwrap();
+    let mut ragged = legacy_about_table_document();
+    ragged["content"][0]["content"][1]["content"]
+        .as_array_mut()
+        .unwrap()
+        .pop()
+        .expect("fixture has a second-row cell");
+    about["body"] = ragged;
+    write_json(&about_path, &about);
+    let about_config = base_config(about_dir.path());
+    let error = prepare_error(&about_config);
+    assert!(
+        error.contains("About content storage contains an invalid document"),
+        "got: {error}"
+    );
+    let connection = db::open_database(&about_config.database_path).unwrap();
+    let posts: i64 = connection
+        .query_row("SELECT COUNT(*) FROM posts", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(posts, 0, "ragged About table rolls back the import");
+    assert_eq!(db::imported_at(&connection).unwrap(), None, "no marker");
+
+    let description_dir = standard_fixture_dir();
+    let publication_path = description_dir
+        .path()
+        .join("data/gubernia-publications.json");
+    let mut publications: Value =
+        serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
+    publications["gubernias"]["ryazan"]["description"] = legacy_about_table_document();
+    write_json(&publication_path, &publications);
+    let description_config = base_config(description_dir.path());
+    let error = prepare_error(&description_config);
+    assert!(error.contains("invalid fields"), "got: {error}");
+    let connection = db::open_database(&description_config.database_path).unwrap();
+    let provinces: i64 = connection
+        .query_row("SELECT COUNT(*) FROM provinces", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        provinces, 0,
+        "province descriptions remain legacy strings during import"
+    );
+    assert_eq!(db::imported_at(&connection).unwrap(), None, "no marker");
+}
+
+#[tokio::test]
 async fn legacy_plain_text_descriptions_import_as_rich_documents() {
     let dir = standard_fixture_dir();
     let publication_path = dir.path().join("data/gubernia-publications.json");
@@ -617,6 +891,64 @@ async fn force_reimport_with_an_invalid_fixture_keeps_the_previous_database() {
         .query_row("SELECT COUNT(*) FROM districts", [], |row| row.get(0))
         .unwrap();
     assert_eq!(districts, 77);
+    assert!(
+        db::imported_at(&connection).unwrap().is_some(),
+        "marker preserved"
+    );
+}
+
+#[test]
+fn force_reimport_with_a_ragged_table_keeps_the_previous_post_body() {
+    let dir = standard_fixture_dir();
+    let config = base_config(dir.path());
+    let canonical_collection = canonical(&config.public_data_dir);
+    let geo = GeoRuntime::new(&config.public_data_dir);
+    let mut connection = db::open_database(&config.database_path).unwrap();
+    db::migrate(&mut connection).unwrap();
+    run_import_command(&mut connection, &config, &canonical_collection, &geo, false).unwrap();
+
+    let live_body = paragraph_doc("Живая редакторская правка");
+    connection
+        .execute(
+            "UPDATE posts SET body_json = ?1 WHERE id = ?2",
+            rusqlite::params![live_body.to_string(), common::LEGACY_POST_ID],
+        )
+        .unwrap();
+
+    let publication_path = dir.path().join("data/gubernia-publications.json");
+    let mut publications: Value =
+        serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
+    let mut ragged = legacy_about_table_document();
+    ragged["content"][0]["content"][1]["content"]
+        .as_array_mut()
+        .unwrap()
+        .pop()
+        .expect("fixture has a second-row cell");
+    publications["gubernias"]["ryazan"]["posts"][0]["body"] = ragged;
+    write_json(&publication_path, &publications);
+
+    let error = run_import_command(
+        &mut connection,
+        &config,
+        &canonical_collection,
+        &geo,
+        true,
+    )
+    .expect_err("ragged table is rejected before any write");
+    assert!(error.contains("invalid post body"), "got: {error}");
+
+    let stored_body: String = connection
+        .query_row(
+            "SELECT body_json FROM posts WHERE id = ?1",
+            [common::LEGACY_POST_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&stored_body).unwrap(),
+        live_body,
+        "failed table import preserves live post content"
+    );
     assert!(
         db::imported_at(&connection).unwrap().is_some(),
         "marker preserved"
@@ -1029,4 +1361,63 @@ fn image_owner_migration_preserves_existing_post_attachments() {
     let preserved = dimasik_backend::store::load_image_access(&connection, "old-image")
         .unwrap().unwrap();
     assert_eq!(preserved.image.post_id.as_deref(), Some("old-post"));
+}
+
+#[test]
+fn post_author_migration_defaults_old_rows_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut connection = db::open_database(&dir.path().join("v5.sqlite")).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_init.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0002_districts.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0004_post_images.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0005_entity_images.sql"))
+        .unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE provinces RENAME COLUMN description TO description_json;
+             CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+             INSERT INTO schema_migrations VALUES
+               (1, 'old'), (2, 'old'), (3, 'old'), (4, 'old'), (5, 'old');
+             INSERT INTO provinces (id, published, slug) VALUES ('ryazan', 1, 'ryazanskaya');
+             INSERT INTO posts
+               (id, province_id, title, body_json, created_at, updated_at, created_ms, position,
+                archive_reference)
+             VALUES
+               ('old-post', 'ryazan', 'Существующая запись', '{}', 'old', 'old', 1, 0,
+                'Ф. 1');",
+        )
+        .unwrap();
+
+    db::migrate(&mut connection).unwrap();
+    let migrated: (String, String) = connection
+        .query_row(
+            "SELECT author, archive_reference FROM posts WHERE id = 'old-post'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(migrated, ("".to_string(), "Ф. 1".to_string()));
+
+    connection
+        .execute(
+            "UPDATE posts SET author = 'Сохранённый автор' WHERE id = 'old-post'",
+            [],
+        )
+        .unwrap();
+    db::migrate(&mut connection).unwrap();
+    let preserved: String = connection
+        .query_row(
+            "SELECT author FROM posts WHERE id = 'old-post'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved, "Сохранённый автор");
 }

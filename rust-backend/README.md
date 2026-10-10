@@ -86,9 +86,19 @@ GeoJSON (its `published`/`slug` properties), the bundled category and
 settlement-type lists, the bundled About paragraphs, and no references.
 `serve` and `import` only ever read the source documents.
 
-Legacy shapes are preserved: posts without a category stay `null`, settlements
+Legacy shapes are preserved: posts without a category stay `null`, while a
+missing or `null` post `author` imports as `""`; a stored author is accepted up
+to 300 UTF-16 code units and is preserved verbatim by import. Settlements
 without a stored `url` expose the derived `/naselennyy-punkt/<id>` address and
 keep `type: null`, and original ids, ordering and timestamps are untouched.
+
+Posts and About fixture bodies accept the same validated table documents as
+runtime writes, including canonical cell attributes and span geometry. Legacy
+province fixture descriptions remain plain strings, converted to paragraph
+documents; this does not change their import format. The pre-existing settlement
+reference importer checks that fixture bodies are objects rather than applying
+the rich-document validator. That import-validation gap is intentionally
+unchanged; runtime reference saves and reads still validate rich documents.
 
 ## HTTP surface
 
@@ -119,6 +129,23 @@ it) requires the `dimasik_admin_session` cookie (HttpOnly, SameSite=Strict,
 eight hours) and an Origin that either equals `FRONTEND_ORIGIN` or matches the
 request host. Request bodies keep the original byte caps (posts 610,192 bytes,
 settlements 4,096, settings 2,048, content 602,000).
+
+Post create/edit payloads accept optional `author` metadata. Missing, `null`
+and blank values normalize to `""`; strings are JavaScript-trimmed and limited
+to 300 UTF-16 code units. Responses and both province and settlement public
+reads always serialize `author` as a string. `archiveReference` remains the
+storage/API key, while its user-visible and validation label is «Источник».
+
+`PATCH /api/naselennyy-punkt/{slug}/reference` accepts optional `name` and
+optional `body`; at least one is required, and `imageIds` is valid only with
+`body`. `{name}` performs a name-only save while preserving the current
+reference and gallery, including records that have no reference. A normal
+`{name, body, imageIds}` save renames and updates reference content atomically.
+The shared settlement-name validator trims the name and enforces 1–200 UTF-16
+code units. The response is `{name, body, images}`; `body` is `null` when no
+reference exists. The settlement id, URL, province, district, coordinates,
+type, creation time and order never change. Explicitly clearing all reference
+text and final images remains invalid.
 
 Traffic reports use `GET /api/metrika/traffic?report=overview|daily|pages|sources|devices&period=today|7d|30d|custom`.
 Custom periods require inclusive ISO dates `from` and `to`; dates use Moscow time
@@ -195,12 +222,12 @@ upload; ids attached to another post answer 409, unknown, expired or already
 detached ids answer 404, and a non-array value, duplicate id or more than ten
 ids answers 400. Submitted order becomes `position`.
 
-The create or update, including title, body, metadata, province placement or
-move, image claims, detaches and ordering, runs in one `BEGIN IMMEDIATE`
-transaction. Any invalid id or other failure rolls the entire operation back,
-so neither post fields nor attachments change. These routes have the same
-administrator-cookie and Origin/host authorization requirements as the other
-mutating routes.
+The create or update, including title, body, optional author/year/source
+metadata, province placement or move, image claims, detaches and ordering,
+runs in one `BEGIN IMMEDIATE` transaction. Any invalid id or other failure
+rolls the entire operation back, so neither post fields nor attachments
+change. These routes have the same administrator-cookie and Origin/host
+authorization requirements as the other mutating routes.
 
 Post bodies keep strict rich-document validation with one image-only
 exception: an empty body is accepted exactly when the final attachment list is
@@ -213,8 +240,47 @@ with an empty body answers 400 with
 last image. Because image validation and claims occur in the same transaction,
 a forged or unusable id cannot authorise an image-only record.
 
+### Rich-document tables
+
+The shared validator accepts tables in posts, province descriptions, settlement
+references and About content. A `table` contains 1–100 `tableRow` nodes; each row
+contains `tableCell` or `tableHeader` nodes. Tables and rows accept only `type`
+and `content`. A cell/header accepts only `type`, `attrs` and `content`, and its
+non-empty content is a block array (an empty paragraph is valid). Existing block
+formatting, links and nested tables are supported in cells.
+
+Cell attributes are canonicalised to all four keys:
+
+```json
+{"colspan":1,"rowspan":1,"colwidth":null,"align":null}
+```
+
+Only these attributes are allowed. Missing spans default to 1; explicit spans
+must be integral numbers in 1–100. Missing/null widths and alignment become
+`null`. A `colwidth` array must have exactly `colspan` entries, each an integer
+in 0–10,000; zero preserves an unsized column. Alignment is limited to `left`,
+`center` or `right`. Valid non-default widths and spans survive save/read/import.
+Explicit paragraph/heading `textAlign` values, including `left`, are preserved:
+they override a cell's inherited alignment. Missing/null block alignment remains
+unset rather than becoming an explicit override.
+
+The effective grid must be rectangular, with 1–100 columns, no holes or
+overlapping cells, and no rowspan extending beyond the table. A row may have no
+explicit cells only when prior rowspans cover it completely. Geometry validation
+uses a bounded rolling occupancy row, not an untrusted width-by-height allocation.
+Tables remain subject to the existing document caps: 200,000 UTF-16 units of JSON
+for both submitted and canonical output (default attributes can enlarge it),
+100,000 UTF-16 units of text, 5,000 non-root nodes and depth 20 (including table,
+row and cell levels). Request byte caps and SQLite schema are unchanged.
+
+A blank grid does not count as visible text. Blank province descriptions still
+clear to `null`; blank posts/references need usable final images and retain the
+existing canonical empty-document behavior. About still requires visible text.
+Malformed attributes or geometry are never accepted as empty content and fail
+before any content, metadata, rename, placement or gallery changes are committed.
+
 SSR internal endpoints (for the server-only fetch adapter; forward the incoming
-cookie):
+cookie for session-aware reads, but public reads do not require one):
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -222,10 +288,20 @@ cookie):
 | GET | `/internal/geo` | `{provinces, settlements}` |
 | GET | `/internal/gubernia/{slug}` | `PublishedGubernia` or 404 |
 | GET | `/internal/settlement/{slug}` | `{settlement, gubernia}` or 404 |
-| GET | `/internal/settlement-reference/{id}` | `{body}` for a published settlement; 404 when none is stored or the settlement is withdrawn (an admin cookie may read withdrawn rows) |
+| GET | `/internal/settlement-reference/{id}` | `{body, images}` for a published settlement; 404 when none is stored or the settlement is withdrawn (an admin cookie may read withdrawn rows) |
 | GET | `/internal/about` | `{body}` |
 | GET | `/internal/settings` | `{categories, settlementTypes}` |
-| GET | `/internal/metrics` | `PublicationMetrics` (admin cookie required, else 401) |
+| GET | `/internal/metrics` | Public `PublicationMetrics` for `/o-proekte`; no administrator cookie required |
+
+`/internal/metrics` is the sole portal-content aggregate. It returns the canonical
+historical province total, the number of published provinces, totals of posts and
+settlements in those published provinces only, and their names, ids, slugs and
+per-province counts (Russian name order). Unpublished province details, content
+bodies and administrator/Metrika configuration are not exposed. Anonymous and
+administrator SSR reads receive the same summary; all responses remain
+`Cache-Control: no-store`. This public aggregate does not change the administrator
+session requirement for `/api/metrika/traffic` or the `/metriki` page, or any
+mutation authorization.
 
 ## Storage notes
 
@@ -257,6 +333,8 @@ cookie):
   keeps its uploaded bytes, EXIF metadata and detected JPEG/PNG/WebP content
   type. Migration 4 adds the table without backfilling, so every post created
   before it simply has no image rows and serializes an empty `images` array.
+* Migration 6 adds `posts.author TEXT NOT NULL DEFAULT ''`; existing rows gain
+  the empty author without changing any other publication field.
 * `POST /api/post-images` first writes a **provisional** row
   (`attached_ms = 0`, zero dimensions, the deterministic object keys) and only
   then PUTs the objects; once both exist the same row is completed with the

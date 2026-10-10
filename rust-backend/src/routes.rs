@@ -487,19 +487,31 @@ pub async fn reference_patch(
 ) -> ApiResult<Response> {
     http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
     let payload = http::read_json_object(&headers, body, Some(MAX_POST_REQUEST_BYTES)).await?;
-    if !allowed_keys(&payload, &["body", "imageIds"]) || !payload.contains_key("body") {
-        return Err(ApiError::bad_request("Ожидается документ содержимого страницы."));
+    if !allowed_keys(&payload, &["name", "body", "imageIds"])
+        || (!payload.contains_key("name") && !payload.contains_key("body"))
+        || (payload.contains_key("imageIds") && !payload.contains_key("body"))
+    {
+        return Err(ApiError::bad_request(
+            "Ожидается название или документ содержимого страницы.",
+        ));
     }
-    let document = payload.get("body").cloned().unwrap_or(Value::Null);
+    let name = payload.get("name").cloned();
+    let document = payload.get("body").cloned();
     let image_ids = payload.get("imageIds").cloned();
-    let (body, images, detached) = state
+    let (name, body, images, detached) = state
         .call(move |conn| {
             let Some(settlement_id) =
                 store::find_published_settlement_id_by_slug(conn, &slug)?
             else {
                 return Err(ApiError::not_found("Населённый пункт не найден."));
             };
-            store::save_settlement_reference(conn, &settlement_id, &document, image_ids.as_ref())
+            store::save_settlement_reference(
+                conn,
+                &settlement_id,
+                name.as_ref(),
+                document.as_ref(),
+                image_ids.as_ref(),
+            )
         })
         .await?;
     // Images removed by this save are detached with their cleanup marker;
@@ -509,7 +521,7 @@ pub async fn reference_patch(
     }
     Ok(http::json_response(
         StatusCode::OK,
-        json!({ "body": body, "images": images_json(&images) }),
+        json!({ "name": name, "body": body, "images": images_json(&images) }),
     ))
 }
 
@@ -732,13 +744,7 @@ pub async fn internal_settings(State(state): State<AppState>) -> ApiResult<Respo
     Ok(http::json_response(StatusCode::OK, value))
 }
 
-pub async fn internal_metrics(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> ApiResult<Response> {
-    if !state.auth.has_admin_session(&headers, now_unix()) {
-        return Err(ApiError::unauthorized());
-    }
+pub async fn internal_metrics(State(state): State<AppState>) -> ApiResult<Response> {
     let canonical = state.canonical.clone();
     let value = state
         .call(move |conn| store::get_publication_metrics(conn, &canonical))

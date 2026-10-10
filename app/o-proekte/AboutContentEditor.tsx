@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -25,6 +26,21 @@ import type { PostDocument } from "@/lib/post-content";
 import styles from "./AboutContentEditor.module.css";
 
 const KEYBOARD_HINT = "Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца.";
+const SETTLEMENT_NAME_MAX_LENGTH = 200;
+function documentHasVisibleText(document: PostDocument | null) {
+  if (!document) return false;
+  return nodesHaveVisibleText(document.content);
+}
+
+function nodesHaveVisibleText(nodes: PostDocument["content"]): boolean {
+  for (const node of nodes) {
+    if (node.type === "text" && node.text?.trim()) return true;
+    if (node.content && nodesHaveVisibleText(node.content)) return true;
+  }
+  return false;
+}
+
+
 
 type AboutContentEditorProps = {
   initialBody: PostDocument;
@@ -53,6 +69,11 @@ type RichPageContentEditorProps = {
   initialImages?: PostImage[];
   /** Accessible name of the public gallery under the text. */
   imagesAriaLabel?: string;
+  /**
+   * Opts settlement references into editing the record name in the same
+   * request. Other shared-editor consumers keep their existing text contract.
+   */
+  settlementName?: string;
   /**
    * Opens a long document as a truncated rich-text prefix (~560 characters)
    * with a «Читать далее» toggle instead of the full body. The prefix renders
@@ -91,10 +112,12 @@ export function RichPageContentEditor({
   imageSupport = false,
   initialImages = [],
   imagesAriaLabel = "Изображения",
+  settlementName,
 }: RichPageContentEditorProps) {
   const router = useRouter();
   const [body, setBody] = useState<PostDocument | null>(initialBody);
   const [images, setImages] = useState<PostImage[]>(initialImages);
+  const [currentSettlementName, setCurrentSettlementName] = useState(settlementName ?? "");
   const [editing, setEditing] = useState(false);
   const [status, setStatus] = useState("");
   const [previewExpanded, setPreviewExpanded] = useState(false);
@@ -107,6 +130,10 @@ export function RichPageContentEditor({
     // The page renders the slot; portaling keeps one state for row and editor.
     setAdminRowTarget(document.getElementById(adminActionsTargetId));
   }, [adminActionsTargetId]);
+
+  useEffect(() => {
+    if (settlementName !== undefined) setCurrentSettlementName(settlementName);
+  }, [settlementName]);
 
   useEffect(() => {
     if (!returnFocus || editing || !isAdmin) return;
@@ -125,9 +152,14 @@ export function RichPageContentEditor({
     setEditing(false);
   }
 
-  function handleSaved(nextBody: PostDocument | null, nextImages: PostImage[]) {
+  function handleSaved(
+    nextBody: PostDocument | null,
+    nextImages: PostImage[],
+    nextSettlementName?: string,
+  ) {
     setBody(nextBody);
     setImages(nextImages);
+    if (nextSettlementName !== undefined) setCurrentSettlementName(nextSettlementName);
     setPreviewExpanded(false);
     setStatus("Изменения сохранены.");
     finishEditing();
@@ -188,6 +220,7 @@ export function RichPageContentEditor({
           initialBody={body}
           initialImages={images}
           imageSupport={imageSupport}
+          settlementName={settlementName === undefined ? undefined : currentSettlementName}
           endpoint={endpoint}
           editorLabel={editorLabel}
           emptyValidationMessage={emptyValidationMessage}
@@ -235,11 +268,13 @@ type RichPageContentFormProps = {
   editorLabel: string;
   emptyValidationMessage: string;
   saveErrorMessage: string;
-  onSaved: (body: PostDocument | null, images: PostImage[]) => void;
+  onSaved: (body: PostDocument | null, images: PostImage[], settlementName?: string) => void;
   onCancel: () => void;
   /** When set, the form also saves the ordered image set and mounts the picker. */
   imageSupport?: boolean;
   initialImages?: PostImage[];
+  /** Enables the settlement-name field and includes its value in the PATCH. */
+  settlementName?: string;
 };
 
 function RichPageContentForm({
@@ -252,8 +287,12 @@ function RichPageContentForm({
   onCancel,
   imageSupport = false,
   initialImages = [],
+  settlementName,
 }: RichPageContentFormProps) {
   const editor = usePostDocumentEditor(initialBody ?? "", editorLabel);
+  const nameId = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
+  const [name, setName] = useState(settlementName ?? "");
   const richTextFieldRef = useRef<RichTextFieldHandle>(null);
   const imageUploaderRef = useRef<PostImageUploaderHandle>(null);
   const [saving, setSaving] = useState(false);
@@ -262,19 +301,44 @@ function RichPageContentForm({
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (settlementName !== undefined) {
+      nameRef.current?.focus();
+      return;
+    }
     editor?.commands.focus();
-  }, [editor]);
+  }, [editor, settlementName]);
 
   async function save() {
     if (!editor || saving) return;
+    const nextName = settlementName === undefined ? undefined : name.trim();
+    if (nextName !== undefined && !nextName) {
+      setError("Название населённого пункта не должно быть пустым.");
+      nameRef.current?.focus();
+      return;
+    }
+    if (nextName !== undefined && nextName.length > SETTLEMENT_NAME_MAX_LENGTH) {
+      setError(
+        `Название населённого пункта должно быть не длиннее ${SETTLEMENT_NAME_MAX_LENGTH} символов.`,
+      );
+      nameRef.current?.focus();
+      return;
+    }
     const imageUploader = imageSupport ? imageUploaderRef.current : null;
     if (imageUploader?.isBlocked()) {
       setError("Дождитесь завершения загрузки изображений или удалите файлы с ошибкой.");
       return;
     }
-    // Same rule as posts: empty text is valid only with images in the final set.
     const imageIds = imageUploader?.getImageIds() ?? [];
-    if (!editor.getText().trim() && imageIds.length === 0) {
+    const referenceIsEmpty = !editor.getText().trim() && imageIds.length === 0;
+    const nameOnlySave =
+      nextName !== undefined &&
+      !documentHasVisibleText(initialBody) &&
+      initialImages.length === 0 &&
+      referenceIsEmpty;
+    // A name-only save is permitted only for a record whose reference was
+    // already empty when this form opened. Existing content is never cleared
+    // by omitting the reference fields.
+    if (referenceIsEmpty && !nameOnlySave) {
       setError(emptyValidationMessage);
       editor.chain().focus().run();
       return;
@@ -290,27 +354,42 @@ function RichPageContentForm({
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({
-          body: editor.getJSON(),
-          // The ordered final set is sent every time: kept images in order plus
-          // new uploads. Omission would leave stored images untouched instead.
-          ...(imageSupport ? { imageIds } : {}),
-        }),
+        body: JSON.stringify(
+          nameOnlySave
+            ? { name: nextName }
+            : {
+                ...(nextName === undefined ? {} : { name: nextName }),
+                body: editor.getJSON(),
+                // The ordered final set is sent every time: kept images in order plus
+                // new uploads. Omission would leave stored images untouched instead.
+                ...(imageSupport ? { imageIds } : {}),
+              },
+        ),
       });
       if (!response.ok) {
         setError(await errorMessage(response, saveErrorMessage));
         return;
       }
 
-      const data = (await response.json()) as { body?: PostDocument | null; images?: PostImage[] };
+      const data = (await response.json()) as {
+        body?: PostDocument | null;
+        images?: PostImage[];
+        name?: unknown;
+      };
       const nextImages = Array.isArray(data.images) ? data.images : [];
-      if (!data.body && (!imageSupport || nextImages.length === 0)) {
+      if (!data.body && (!imageSupport || nextImages.length === 0) && !nameOnlySave) {
         setError("Сервер вернул некорректный ответ. Попробуйте ещё раз.");
         return;
       }
+      const savedName =
+        nextName === undefined
+          ? undefined
+          : typeof data.name === "string" && data.name.trim()
+            ? data.name
+            : nextName;
       // The stored record now owns the new uploads: never clean them up as pending.
       imageUploaderRef.current?.claimAll();
-      onSaved(data.body ?? null, nextImages);
+      onSaved(data.body ?? null, nextImages, savedName);
     } catch {
       setError("Не удалось связаться с сервером.");
     } finally {
@@ -355,6 +434,30 @@ function RichPageContentForm({
 
   return (
     <form className={styles.form} onSubmit={handleSubmit} onKeyDown={handleKeyDown} noValidate>
+      {settlementName !== undefined ? (
+        <>
+          <label className={styles.bodyLabel} htmlFor={nameId}>
+            Название населённого пункта
+          </label>
+          <input
+            ref={nameRef}
+            id={nameId}
+            name="name"
+            className={styles.nameInput}
+            value={name}
+            maxLength={SETTLEMENT_NAME_MAX_LENGTH}
+            autoComplete="off"
+            spellCheck={false}
+            required
+            disabled={saving}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError("");
+            }}
+          />
+        </>
+      ) : null}
+
       <span className={styles.bodyLabel}>{editorLabel}</span>
       <RichTextField
         ref={richTextFieldRef}

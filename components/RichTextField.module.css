@@ -1,5 +1,20 @@
 .editor {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stickyControls {
+  position: sticky;
+  top: var(--page-navigation-offset, 0px);
+  z-index: 3;
+  align-self: start;
+  min-width: 0;
+  max-height: max(48px, min(40dvh, calc(100dvh - var(--page-navigation-offset, 0px) - 96px)));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #faf9f5;
 }
 
 .toolbar {
@@ -16,6 +31,9 @@
 
 .toolbarGroup {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: 2px;
   padding: 0 6px;
@@ -51,6 +69,11 @@
 .toolbarButton[aria-pressed="true"] {
   border-color: #c9c7c0;
   background: #ece7dc;
+}
+
+.toolbarButton:focus-visible {
+  outline: 2px solid #6f5a2b;
+  outline-offset: 1px;
 }
 
 .toolbarButton:disabled {
@@ -173,6 +196,8 @@
 }
 
 .editorContent {
+  min-width: 0;
+  max-width: 100%;
   padding: 12px 14px;
   border: 1px solid #d5d1c7;
   border-radius: 0 0 3px 3px;
@@ -188,6 +213,7 @@
 .editorContent :global(.ProseMirror) {
   min-height: 150px;
   outline: none;
+  min-width: 0;
 }
 
 .editorContent :global(.ProseMirror p) {
@@ -239,6 +265,50 @@
   color: #6f5a2b;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.editorContent :global(.ProseMirror .tableWrapper) {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.editorContent :global(.ProseMirror table) {
+  border-collapse: collapse;
+  table-layout: fixed;
+  max-width: none;
+}
+
+.editorContent :global(.ProseMirror td),
+.editorContent :global(.ProseMirror th) {
+  position: relative;
+  min-width: 100px;
+  padding: 8px 10px;
+  border: 1px solid #d5d1c7;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.editorContent :global(.ProseMirror th) {
+  background: #f3efe6;
+  font-weight: 600;
+  text-align: left;
+}
+
+.editorContent :global(.ProseMirror td > :last-child),
+.editorContent :global(.ProseMirror th > :last-child) {
+  margin-bottom: 0;
+}
+
+.editorContent :global(.ProseMirror .selectedCell::after) {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: rgb(111 90 43 / 16%);
+  content: "";
+  pointer-events: none;
 }
 
 .hint {

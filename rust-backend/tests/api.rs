@@ -151,6 +151,8 @@ async fn bootstrap_preserves_fixture_state_and_legacy_shapes() {
     assert_eq!(posts[0]["updatedAt"], "2026-10-07T10:00:00.000Z");
     assert_eq!(posts[1]["id"], common::OLDER_POST_ID);
     assert_eq!(posts[1]["archiveReference"], "Ф. 1, оп. 2");
+    assert_eq!(posts[0]["author"], "");
+    assert_eq!(posts[1]["author"], "");
     assert_eq!(posts[1]["settlementId"], LEGACY_SETTLEMENT_ID);
 
     let settlements = gubernia.body["settlements"].as_array().expect("settlements");
@@ -241,21 +243,100 @@ async fn internal_reads_and_missing_resources() {
     );
 
     let metrics = api(&app, Method::GET, "/internal/metrics", None, None).await;
-    assert_eq!(metrics.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(metrics.error_message(), "Требуется вход администратора.");
+    assert_eq!(metrics.status, StatusCode::OK);
+    assert_eq!(metrics.cache_control(), Some("no-store"));
+    assert_eq!(
+        metrics.body,
+        json!({
+            "totalHistoricalGubernias": 76,
+            "publishedCount": 2,
+            "totalPublishedPosts": 2,
+            "totalPublishedSettlements": 1,
+            "provinces": [
+                {
+                    "id": "ryazan",
+                    "name": "Рязанская губерния",
+                    "slug": "ryazanskaya",
+                    "postsCount": 2,
+                    "settlementsCount": 1
+                },
+                {
+                    "id": "tula",
+                    "name": "Тульская губерния",
+                    "slug": "tulskaya",
+                    "postsCount": 0,
+                    "settlementsCount": 0
+                }
+            ]
+        })
+    );
 
     let cookie = admin_cookie(&app).await;
-    let metrics = api(&app, Method::GET, "/internal/metrics", Some(&cookie), None).await;
+    let admin_metrics = api(&app, Method::GET, "/internal/metrics", Some(&cookie), None).await;
+    assert_eq!(admin_metrics.status, StatusCode::OK);
+    assert_eq!(admin_metrics.body, metrics.body);
+}
+
+#[tokio::test]
+async fn public_metrics_exclude_unpublished_provinces_and_their_retained_content() {
+    let env = TestEnv::new();
+    let connection =
+        dimasik_backend::db::open_database(&env.config.database_path).expect("database opens");
+    // Keep Ryazan's posts and settlement in storage to test publication filtering,
+    // independently of the unpublish route's content cleanup.
+    connection
+        .execute(
+            "UPDATE provinces SET published = 0, slug = NULL WHERE id = 'ryazan'",
+            [],
+        )
+        .unwrap();
+    let stored_counts: (i64, i64) = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM posts), (SELECT COUNT(*) FROM settlements)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_counts, (2, 1));
+
+    let metrics = api(&env.app, Method::GET, "/internal/metrics", None, None).await;
     assert_eq!(metrics.status, StatusCode::OK);
-    assert_eq!(metrics.body["totalHistoricalGubernias"], 76);
-    assert_eq!(metrics.body["publishedCount"], 2);
-    assert_eq!(metrics.body["totalPublishedPosts"], 2);
-    assert_eq!(metrics.body["totalPublishedSettlements"], 1);
-    let provinces = metrics.body["provinces"].as_array().expect("provinces");
-    assert_eq!(provinces[0]["name"], "Рязанская губерния");
-    assert_eq!(provinces[0]["postsCount"], 2);
-    assert_eq!(provinces[0]["settlementsCount"], 1);
-    assert_eq!(provinces[1]["name"], "Тульская губерния");
+    assert_eq!(metrics.cache_control(), Some("no-store"));
+    assert_eq!(
+        metrics.body,
+        json!({
+            "totalHistoricalGubernias": 76,
+            "publishedCount": 1,
+            "totalPublishedPosts": 0,
+            "totalPublishedSettlements": 0,
+            "provinces": [{
+                "id": "tula",
+                "name": "Тульская губерния",
+                "slug": "tulskaya",
+                "postsCount": 0,
+                "settlementsCount": 0
+            }]
+        })
+    );
+
+    connection
+        .execute(
+            "UPDATE provinces SET published = 0, slug = NULL WHERE id = 'tula'",
+            [],
+        )
+        .unwrap();
+    let empty = api(&env.app, Method::GET, "/internal/metrics", None, None).await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert_eq!(
+        empty.body,
+        json!({
+            "totalHistoricalGubernias": 76,
+            "publishedCount": 0,
+            "totalPublishedPosts": 0,
+            "totalPublishedSettlements": 0,
+            "provinces": []
+        })
+    );
 }
 
 #[tokio::test]
@@ -730,7 +811,7 @@ async fn unpublish_clears_content_and_metrics_but_keeps_orphan_references() {
     let app = env.app.clone();
     let cookie = admin_cookie(&app).await;
 
-    let before = api(&app, Method::GET, "/internal/metrics", Some(&cookie), None).await;
+    let before = api(&app, Method::GET, "/internal/metrics", None, None).await;
     assert_eq!(before.body["totalPublishedPosts"], 2);
 
     let response = api(
@@ -743,7 +824,7 @@ async fn unpublish_clears_content_and_metrics_but_keeps_orphan_references() {
     .await;
     assert_eq!(response.status, StatusCode::NO_CONTENT);
 
-    let metrics = api(&app, Method::GET, "/internal/metrics", Some(&cookie), None).await;
+    let metrics = api(&app, Method::GET, "/internal/metrics", None, None).await;
     assert_eq!(metrics.body["publishedCount"], 1);
     assert_eq!(metrics.body["totalPublishedPosts"], 0);
     assert_eq!(metrics.body["totalPublishedSettlements"], 0);
@@ -794,7 +875,8 @@ async fn post_crud_placement_ordering_and_moves() {
             "category": "Статья",
             "settlementId": LEGACY_SETTLEMENT_ID,
             "year": " 1910 ",
-            "archiveReference": ""
+            "archiveReference": "",
+            "author": "  И. И. Автор  "
         })),
     )
     .await;
@@ -805,10 +887,51 @@ async fn post_crud_placement_ordering_and_moves() {
     assert_eq!(created.body["settlementId"], LEGACY_SETTLEMENT_ID);
     assert_eq!(created.body["year"], "1910");
     assert_eq!(created.body["category"], "Статья");
+    assert_eq!(created.body["author"], "И. И. Автор");
 
     // Newest first: the new post heads the list.
     let gubernia = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
     assert_eq!(gubernia.body["posts"][0]["id"], post_id);
+    assert_eq!(gubernia.body["posts"][0]["author"], "И. И. Автор");
+    let settlement_page = api(
+        &app,
+        Method::GET,
+        &format!("/internal/settlement/{LEGACY_SETTLEMENT_ID}"),
+        None,
+        None,
+    )
+    .await;
+    let embedded = settlement_page.body["gubernia"]["posts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|post| post["id"] == post_id)
+        .expect("new post is present in settlement page snapshot");
+    assert_eq!(embedded["author"], "И. И. Автор");
+
+    let oversized_author = api(
+        &app,
+        Method::PATCH,
+        &format!("/api/gubernias/ryazan/posts/{post_id}"),
+        Some(&cookie),
+        Some(json!({
+            "title": "Не сохранять",
+            "body": paragraph_doc("Не сохранять"),
+            "category": "Статья",
+            "settlementId": LEGACY_SETTLEMENT_ID,
+            "author": "я".repeat(301)
+        })),
+    )
+    .await;
+    assert_eq!(oversized_author.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        oversized_author.error_message(),
+        "Поле «Автор» должно быть не длиннее 300 символов."
+    );
+    let unchanged =
+        api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    assert_eq!(unchanged.body["posts"][0]["title"], "Новый");
+    assert_eq!(unchanged.body["posts"][0]["author"], "И. И. Автор");
 
     let mismatch = api(
         &app,
@@ -857,7 +980,8 @@ async fn post_crud_placement_ordering_and_moves() {
             "title": "Новый",
             "body": paragraph_doc("Тело"),
             "category": "Статья",
-            "uyezdId": "uyezd-1897-2"
+            "uyezdId": "uyezd-1897-2",
+            "author": "И. И. Автор"
         })),
     )
     .await;
@@ -953,7 +1077,8 @@ async fn post_crud_placement_ordering_and_moves() {
             "body": paragraph_doc("Тело"),
             "category": "Статья",
             "targetGuberniaId": "tula",
-            "uyezdId": "uyezd-1897-9"
+            "uyezdId": "uyezd-1897-9",
+            "author": "И. И. Автор"
         })),
     )
     .await;
@@ -969,6 +1094,31 @@ async fn post_crud_placement_ordering_and_moves() {
     let tula = api(&app, Method::GET, "/internal/gubernia/tulskaya", None, None).await;
     assert_eq!(tula.body["posts"].as_array().unwrap().len(), 1);
     assert_eq!(tula.body["posts"][0]["id"], post_id);
+    assert_eq!(tula.body["posts"][0]["author"], "И. И. Автор");
+
+    // Optional/null metadata has the same full-save clearing semantics as
+    // year/source, and the cleared value survives another database open.
+    let cleared_author = api(
+        &app,
+        Method::PATCH,
+        &format!("/api/gubernias/tula/posts/{post_id}"),
+        Some(&cookie),
+        Some(json!({
+            "title": "Новый",
+            "body": paragraph_doc("Тело"),
+            "category": "Статья",
+            "uyezdId": "uyezd-1897-9",
+            "author": null
+        })),
+    )
+    .await;
+    assert_eq!(cleared_author.status, StatusCode::OK);
+    assert_eq!(cleared_author.body["author"], "");
+    env.prepare_again().expect("post author survives database reopen");
+    let reopened = TestEnv::router_for_config(&env.config);
+    let reopened_tula =
+        api(&reopened, Method::GET, "/internal/gubernia/tulskaya", None, None).await;
+    assert_eq!(reopened_tula.body["posts"][0]["author"], "");
 
     let delete_from_wrong_province = api(
         &app,
@@ -2926,7 +3076,7 @@ async fn publishing_another_province_sorts_metrics_with_russian_collation() {
     .await;
     assert_eq!(published.status, StatusCode::CREATED);
 
-    let metrics = api(&app, Method::GET, "/internal/metrics", Some(&cookie), None).await;
+    let metrics = api(&app, Method::GET, "/internal/metrics", None, None).await;
     assert_eq!(metrics.body["publishedCount"], 3);
     let names: Vec<&str> = metrics.body["provinces"]
         .as_array()
@@ -2957,6 +3107,7 @@ async fn every_response_is_no_store() {
         ("GET", "/internal/geo"),
         ("GET", "/internal/about"),
         ("GET", "/internal/settings"),
+        ("GET", "/internal/metrics"),
         ("GET", "/internal/session"),
         ("GET", "/internal/gubernia/ryazanskaya"),
         ("POST", "/api/gubernias"),
@@ -3436,6 +3587,74 @@ async fn settlement_reference_accepts_images_and_preserves_body_only_saves() {
     .await;
     assert_eq!(created.status, StatusCode::CREATED);
     let settlement_id = created.body["id"].as_str().unwrap().to_string();
+
+    // A name-only save works before any reference exists and keeps identity,
+    // geography and the original route unchanged.
+    let renamed_only = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({ "name": "  Переименованное село  " })),
+    )
+    .await;
+    assert_eq!(renamed_only.status, StatusCode::OK);
+    assert_eq!(renamed_only.body["name"], "Переименованное село");
+    assert_eq!(renamed_only.body["body"], Value::Null);
+    assert_eq!(renamed_only.body["images"], json!([]));
+    let renamed_public = api(
+        &app,
+        Method::GET,
+        "/internal/settlement/ref-photos",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(renamed_public.body["settlement"]["id"], settlement_id);
+    assert_eq!(
+        renamed_public.body["settlement"]["name"],
+        "Переименованное село"
+    );
+    assert_eq!(
+        renamed_public.body["settlement"]["url"],
+        "/naselennyy-punkt/ref-photos"
+    );
+    assert_eq!(
+        renamed_public.body["settlement"]["uyezdId"],
+        "uyezd-1897-2"
+    );
+
+    let invalid_name = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({ "name": "x".repeat(201) })),
+    )
+    .await;
+    assert_eq!(invalid_name.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        invalid_name.error_message(),
+        "Название населённого пункта должно быть не длиннее 200 символов."
+    );
+    let image_ids_without_body = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({ "name": "Не менять", "imageIds": [] })),
+    )
+    .await;
+    assert_eq!(image_ids_without_body.status, StatusCode::BAD_REQUEST);
+    let empty_payload = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/ref-photos/reference",
+        Some(&cookie),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(empty_payload.status, StatusCode::BAD_REQUEST);
     let canonical_empty = json!({ "type": "doc", "content": [{ "type": "paragraph" }] });
     let text = paragraph_doc("Справка");
 
@@ -3546,7 +3765,11 @@ async fn settlement_reference_accepts_images_and_preserves_body_only_saves() {
         Method::PATCH,
         "/api/naselennyy-punkt/ref-photos/reference",
         Some(&cookie),
-        Some(json!({ "body": text, "imageIds": ["img-ref-post"] })),
+        Some(json!({
+            "name": "Не должно сохраниться",
+            "body": text,
+            "imageIds": ["img-ref-post"]
+        })),
     )
     .await;
     assert_eq!(conflict.status, StatusCode::CONFLICT);
@@ -3560,6 +3783,19 @@ async fn settlement_reference_accepts_images_and_preserves_body_only_saves() {
     .await;
     assert_eq!(after_conflict.body["body"], text);
     assert_eq!(after_conflict.body["images"][0]["id"], "img-ref-first");
+    let after_conflict_settlement = api(
+        &app,
+        Method::GET,
+        "/internal/settlement/ref-photos",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        after_conflict_settlement.body["settlement"]["name"],
+        "Переименованное село",
+        "foreign image rejection rolls back the rename"
+    );
 
     // The About editor did not grow a photo field.
     let about = api(

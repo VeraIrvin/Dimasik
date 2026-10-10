@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import styles from "./page.module.css";
 
@@ -51,6 +51,7 @@ export default function ProvinceQuickNavigation({
   const [filtersTopReached, setFiltersTopReached] = useState(false);
   const [filtersAbove, setFiltersAbove] = useState(false);
   const [upTargetAbove, setUpTargetAbove] = useState(false);
+  const navigationRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const filters = document.getElementById(filtersId);
@@ -107,10 +108,31 @@ export default function ProvinceQuickNavigation({
   const showNavigation = filtersTopReached;
   const showFilters = filtersAbove;
 
+  useLayoutEffect(() => {
+    const navigation = navigationRef.current;
+    const main = navigation?.closest("main");
+    if (!showNavigation || !navigation || !main) return;
+
+    // The back-only and full-filter layouts can wrap to different heights.
+    // Keep the obstruction local to this page, including after responsive resize.
+    const updateOffset = () => {
+      const height = navigation.getBoundingClientRect().height;
+      main.style.setProperty("--page-navigation-offset", `${height > 0 ? height + 8 : 0}px`);
+    };
+    updateOffset();
+    const observer = new ResizeObserver(updateOffset);
+    observer.observe(navigation, { box: "border-box" });
+    return () => {
+      observer.disconnect();
+      main.style.removeProperty("--page-navigation-offset");
+    };
+  }, [showNavigation, showFilters]);
+
   return (
     <>
       {showNavigation ? (
         <nav
+          ref={navigationRef}
           className={`${styles.floatingNavigation} ${showFilters ? "" : styles.floatingNavigationBackOnly}`}
           aria-label={navigationLabel}
         >

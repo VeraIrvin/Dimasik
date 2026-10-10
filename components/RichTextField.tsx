@@ -14,11 +14,15 @@ import { Color, TextStyle } from "@tiptap/extension-text-style";
 import { Link } from "@tiptap/extension-link";
 import { OrderedList } from "@tiptap/extension-list";
 import { TextAlign } from "@tiptap/extension-text-align";
+import { TableKit } from "@tiptap/extension-table";
+import { cellAround, isInTable, selectedRect } from "@tiptap/pm/tables";
 import { EditorContent, useEditor, useEditorState, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import type { PostDocument } from "@/lib/post-content";
 import styles from "./RichTextField.module.css";
 
+const MAX_TABLE_ROWS = 100;
+const MAX_TABLE_COLUMNS = 100;
 const DEFAULT_COLOR = "#272622";
 const ALIGNMENTS = ["left", "center", "right", "justify"] as const;
 type Alignment = (typeof ALIGNMENTS)[number];
@@ -114,6 +118,9 @@ const EDITOR_EXTENSIONS = [
   TextStyle,
   Color,
   SafeOrderedList,
+  TableKit.configure({
+    table: { resizable: false, renderWrapper: true, cellMinWidth: 100 },
+  }),
   TextAlign.configure({ types: ["heading", "paragraph"] }),
 ];
 
@@ -144,6 +151,13 @@ type ToolbarState = {
   orderedList: boolean;
   blockquote: boolean;
   link: boolean;
+  table: boolean;
+  canInsertTable: boolean;
+  canAddRow: boolean;
+  canDeleteRow: boolean;
+  canAddColumn: boolean;
+  canDeleteColumn: boolean;
+  canDeleteTable: boolean;
   alignment: Alignment;
   color: string | null;
   canUndo: boolean;
@@ -162,6 +176,13 @@ const EMPTY_TOOLBAR_STATE: ToolbarState = {
   orderedList: false,
   blockquote: false,
   link: false,
+  table: false,
+  canInsertTable: false,
+  canAddRow: false,
+  canDeleteRow: false,
+  canAddColumn: false,
+  canDeleteColumn: false,
+  canDeleteTable: false,
   alignment: "left",
   color: null,
   canUndo: false,
@@ -171,6 +192,9 @@ const EMPTY_TOOLBAR_STATE: ToolbarState = {
 function readToolbarState(editor: Editor | null): ToolbarState {
   if (!editor) return EMPTY_TOOLBAR_STATE;
   const color = editor.getAttributes("textStyle").color;
+  const tableRect = isInTable(editor.state) ? selectedRect(editor.state) : null;
+  const cellAlign = cellAround(editor.state.selection.$head)?.nodeAfter?.attrs.align;
+  const inheritedAlignment = cellAlign === "center" || cellAlign === "right" ? cellAlign : "left";
   return {
     bold: editor.isActive("bold"),
     italic: editor.isActive("italic"),
@@ -183,7 +207,17 @@ function readToolbarState(editor: Editor | null): ToolbarState {
     orderedList: editor.isActive("orderedList"),
     blockquote: editor.isActive("blockquote"),
     link: editor.isActive("link"),
-    alignment: ALIGNMENTS.find((alignment) => editor.isActive({ textAlign: alignment })) ?? "left",
+    table: editor.isActive("table"),
+    canInsertTable: editor.isEditable && editor.can().insertTable({ rows: 3, cols: 3, withHeaderRow: true }),
+    canAddRow: editor.isEditable && tableRect !== null && tableRect.map.height < MAX_TABLE_ROWS && editor.can().addRowAfter(),
+    // The library's can() check omits its dispatched all-rows/all-columns guard.
+    canDeleteRow: editor.isEditable && tableRect !== null &&
+      (tableRect.top > 0 || tableRect.bottom < tableRect.map.height) && editor.can().deleteRow(),
+    canAddColumn: editor.isEditable && tableRect !== null && tableRect.map.width < MAX_TABLE_COLUMNS && editor.can().addColumnAfter(),
+    canDeleteColumn: editor.isEditable && tableRect !== null &&
+      (tableRect.left > 0 || tableRect.right < tableRect.map.width) && editor.can().deleteColumn(),
+    canDeleteTable: editor.isEditable && editor.can().deleteTable(),
+    alignment: ALIGNMENTS.find((alignment) => editor.isActive({ textAlign: alignment })) ?? inheritedAlignment,
     color: typeof color === "string" ? color : null,
     canUndo: editor.can().undo(),
     canRedo: editor.can().redo(),
@@ -240,12 +274,34 @@ export default function RichTextField({ editor, hint, ref }: RichTextFieldProps)
   const [linkValue, setLinkValue] = useState("");
   const [linkError, setLinkError] = useState("");
   const linkInputRef = useRef<HTMLInputElement>(null);
+  const stickyControlsRef = useRef<HTMLDivElement>(null);
   const toolbarState =
     useEditorState({ editor, selector: ({ editor: current }) => readToolbarState(current) }) ??
     EMPTY_TOOLBAR_STATE;
 
   useEffect(() => {
-    if (linkOpen) linkInputRef.current?.focus();
+    if (!linkOpen) return;
+    const input = linkInputRef.current;
+    const controls = stickyControlsRef.current;
+    if (!input || !controls) return;
+
+    // Reveal the input inside the bounded controls, without scrolling the page
+    // back to the editor's original toolbar position.
+    input.focus({ preventScroll: true });
+    const revealFocusedInput = () => {
+      if (document.activeElement !== input) return;
+      const inputRect = input.getBoundingClientRect();
+      const controlsRect = controls.getBoundingClientRect();
+      if (inputRect.bottom > controlsRect.bottom) {
+        controls.scrollTop += inputRect.bottom - controlsRect.bottom + 8;
+      } else if (inputRect.top < controlsRect.top) {
+        controls.scrollTop -= controlsRect.top - inputRect.top + 8;
+      }
+    };
+    revealFocusedInput();
+    const observer = new ResizeObserver(revealFocusedInput);
+    observer.observe(controls, { box: "border-box" });
+    return () => observer.disconnect();
   }, [linkOpen]);
 
   const closeLinkField = useCallback(() => {
@@ -264,8 +320,9 @@ export default function RichTextField({ editor, hint, ref }: RichTextFieldProps)
   function applyAlignment(alignment: Alignment) {
     if (!editor) return;
     const chain = editor.chain().focus();
-    // Plain left/right-aligned text stores no attribute at all.
-    if (alignment === "left") {
+    // Outside tables, plain left-aligned text stores no attribute. Inside tables,
+    // an explicit left alignment overrides alignment inherited from pasted cells.
+    if (alignment === "left" && !isInTable(editor.state)) {
       chain.unsetTextAlign().run();
       return;
     }
@@ -300,6 +357,7 @@ export default function RichTextField({ editor, hint, ref }: RichTextFieldProps)
 
   return (
     <div className={styles.editor}>
+      <div ref={stickyControlsRef} className={styles.stickyControls}>
       <div className={styles.toolbar} role="toolbar" aria-label="Форматирование текста">
         <div className={styles.toolbarGroup} role="group" aria-label="Начертание">
           <ToolbarButton
@@ -387,6 +445,51 @@ export default function RichTextField({ editor, hint, ref }: RichTextFieldProps)
             onClick={() => editor?.chain().focus().toggleOrderedList().run()}
           >
             Нумерация
+          </ToolbarButton>
+        </div>
+
+        <div className={styles.toolbarGroup} role="group" aria-label="Таблица">
+          <ToolbarButton
+            label="Вставить таблицу 3 × 3 с заголовком"
+            disabled={!toolbarState.canInsertTable}
+            onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+          >
+            Таблица
+          </ToolbarButton>
+          <ToolbarButton
+            label="Добавить строку после текущей"
+            disabled={!toolbarState.table || !toolbarState.canAddRow}
+            onClick={() => editor?.chain().focus().addRowAfter().run()}
+          >
+            + Строка
+          </ToolbarButton>
+          <ToolbarButton
+            label="Удалить текущую строку"
+            disabled={!toolbarState.table || !toolbarState.canDeleteRow}
+            onClick={() => editor?.chain().focus().deleteRow().run()}
+          >
+            − Строка
+          </ToolbarButton>
+          <ToolbarButton
+            label="Добавить столбец после текущего"
+            disabled={!toolbarState.table || !toolbarState.canAddColumn}
+            onClick={() => editor?.chain().focus().addColumnAfter().run()}
+          >
+            + Столбец
+          </ToolbarButton>
+          <ToolbarButton
+            label="Удалить текущий столбец"
+            disabled={!toolbarState.table || !toolbarState.canDeleteColumn}
+            onClick={() => editor?.chain().focus().deleteColumn().run()}
+          >
+            − Столбец
+          </ToolbarButton>
+          <ToolbarButton
+            label="Удалить таблицу"
+            disabled={!toolbarState.table || !toolbarState.canDeleteTable}
+            onClick={() => editor?.chain().focus().deleteTable().run()}
+          >
+            Убрать таблицу
           </ToolbarButton>
         </div>
 
@@ -517,6 +620,7 @@ export default function RichTextField({ editor, hint, ref }: RichTextFieldProps)
           ) : null}
         </div>
       ) : null}
+      </div>
 
       <EditorContent editor={editor} className={styles.editorContent} />
       <p className={styles.hint}>{hint}</p>

@@ -45,6 +45,7 @@ export default function SettlementReferenceEditor({
     <RichPageContentEditor
       initialBody={initialBody}
       initialImages={initialImages}
+      settlementName={settlementName}
       imageSupport
       imagesAriaLabel="Изображения справки"
       isAdmin={isAdmin}

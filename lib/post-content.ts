@@ -4,6 +4,9 @@ const MAX_DOCUMENT_NODES = 5_000;
 const MAX_DOCUMENT_TEXT = 100_000;
 const MAX_LINK_HREF_LENGTH = 2_048;
 const MAX_LINK_TITLE_LENGTH = 512;
+const MAX_TABLE_ROWS = 100;
+const MAX_TABLE_COLUMNS = 100;
+const MAX_TABLE_COLUMN_WIDTH = 10_000;
 
 const EMPTY_DOCUMENT_MESSAGE = "Текст публикации не должен быть пустым.";
 
@@ -17,11 +20,15 @@ const ALIGNMENTS: Record<string, true> = {
 };
 
 const ALLOWED_PARENTS: Record<string, Record<string, true>> = {
-  paragraph: { doc: true, blockquote: true, listItem: true },
-  heading: { doc: true, blockquote: true, listItem: true },
-  blockquote: { doc: true, blockquote: true, listItem: true },
-  bulletList: { doc: true, blockquote: true, listItem: true },
-  orderedList: { doc: true, blockquote: true, listItem: true },
+  paragraph: { doc: true, blockquote: true, listItem: true, tableCell: true, tableHeader: true },
+  heading: { doc: true, blockquote: true, listItem: true, tableCell: true, tableHeader: true },
+  blockquote: { doc: true, blockquote: true, listItem: true, tableCell: true, tableHeader: true },
+  bulletList: { doc: true, blockquote: true, listItem: true, tableCell: true, tableHeader: true },
+  orderedList: { doc: true, blockquote: true, listItem: true, tableCell: true, tableHeader: true },
+  table: { doc: true, blockquote: true, listItem: true, tableCell: true, tableHeader: true },
+  tableRow: { table: true },
+  tableCell: { tableRow: true },
+  tableHeader: { tableRow: true },
   listItem: { bulletList: true, orderedList: true },
   text: { inline: true },
   hardBreak: { inline: true },
@@ -35,11 +42,16 @@ const NODE_KEYS: Record<string, Record<string, true>> = {
   bulletList: { type: true, content: true },
   orderedList: { type: true, attrs: true, content: true },
   listItem: { type: true, content: true },
+  table: { type: true, content: true },
+  tableRow: { type: true, content: true },
+  tableCell: { type: true, attrs: true, content: true },
+  tableHeader: { type: true, attrs: true, content: true },
   text: { type: true, text: true, marks: true },
   hardBreak: { type: true },
   alignmentAttrs: { textAlign: true },
   headingAttrs: { level: true, textAlign: true },
   orderedListAttrs: { start: true },
+  tableCellAttrs: { colspan: true, rowspan: true, colwidth: true, align: true },
   mark: { type: true, attrs: true },
   textStyleAttrs: { color: true },
   linkAttrs: { href: true, target: true, rel: true, class: true, title: true },
@@ -65,6 +77,10 @@ export type PostNode = {
     level?: number;
     textAlign?: string;
     start?: number;
+    colspan?: number;
+    rowspan?: number;
+    colwidth?: number[] | null;
+    align?: "left" | "center" | "right" | null;
   };
   text?: string;
   marks?: PostMark[];
@@ -84,7 +100,17 @@ export class PostContentValidationError extends Error {
   }
 }
 
-type ParentKind = "doc" | "blockquote" | "bulletList" | "orderedList" | "listItem" | "inline";
+type ParentKind =
+  | "doc"
+  | "blockquote"
+  | "bulletList"
+  | "orderedList"
+  | "listItem"
+  | "table"
+  | "tableRow"
+  | "tableCell"
+  | "tableHeader"
+  | "inline";
 
 type ValidationContext = {
   nodes: number;
@@ -131,7 +157,7 @@ function normalizeAlignmentAttrs(value: unknown): PostNode["attrs"] | undefined 
   if (!hasOnlyKeys(attrs, NODE_KEYS.alignmentAttrs)) fail();
 
   const alignment = attrs.textAlign;
-  if (alignment === null || alignment === undefined || alignment === "left") return undefined;
+  if (alignment === null || alignment === undefined) return undefined;
   if (typeof alignment !== "string" || ALIGNMENTS[alignment] !== true) fail();
   return { textAlign: alignment };
 }
@@ -144,7 +170,7 @@ function normalizeHeadingAttrs(value: unknown): PostNode["attrs"] {
   if (level !== 2 && level !== 3) fail();
 
   const alignment = attrs.textAlign;
-  if (alignment === null || alignment === undefined || alignment === "left") return { level };
+  if (alignment === null || alignment === undefined) return { level };
   if (typeof alignment !== "string" || ALIGNMENTS[alignment] !== true) fail();
   return { level, textAlign: alignment };
 }
@@ -158,6 +184,60 @@ function normalizeOrderedListAttrs(value: unknown): PostNode["attrs"] | undefine
   if (start === null || start === undefined || start === 1) return undefined;
   if (typeof start !== "number" || !Number.isSafeInteger(start) || start < 1 || start > 1_000_000) fail();
   return { start };
+}
+
+function normalizeTableCellAttrs(value: unknown): NonNullable<PostNode["attrs"]> {
+  const attrs = value === undefined ? {} : asRecord(value);
+  if (!hasOnlyKeys(attrs, NODE_KEYS.tableCellAttrs)) fail();
+
+  const colspan = attrs.colspan === undefined ? 1 : attrs.colspan;
+  const rowspan = attrs.rowspan === undefined ? 1 : attrs.rowspan;
+  if (
+    typeof colspan !== "number" || !Number.isSafeInteger(colspan) || colspan < 1 || colspan > MAX_TABLE_COLUMNS ||
+    typeof rowspan !== "number" || !Number.isSafeInteger(rowspan) || rowspan < 1 || rowspan > MAX_TABLE_ROWS
+  ) fail();
+
+  const colwidth = attrs.colwidth === undefined ? null : attrs.colwidth;
+  if (colwidth !== null) {
+    if (!Array.isArray(colwidth) || colwidth.length !== colspan) fail();
+    for (const width of colwidth) {
+      if (typeof width !== "number" || !Number.isSafeInteger(width) || width < 0 || width > MAX_TABLE_COLUMN_WIDTH) fail();
+    }
+  }
+
+  const align = attrs.align === undefined ? null : attrs.align;
+  if (align !== null && align !== "left" && align !== "center" && align !== "right") fail();
+  return { colspan, rowspan, colwidth: colwidth === null ? null : [...colwidth], align };
+}
+
+/** One bounded rolling row of occupancy, never a span-sized grid allocation. */
+function validateTableGeometry(rows: PostNode[]): void {
+  const occupied = new Array<number>(MAX_TABLE_COLUMNS).fill(0);
+  let tableWidth = 0;
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    let column = 0;
+    for (const cell of rows[rowIndex].content ?? []) {
+      while (column < MAX_TABLE_COLUMNS && occupied[column] > 0) column += 1;
+      const colspan = cell.attrs?.colspan ?? 1;
+      const rowspan = cell.attrs?.rowspan ?? 1;
+      if (column + colspan > MAX_TABLE_COLUMNS || rowspan > rows.length - rowIndex) fail();
+      for (let offset = 0; offset < colspan; offset += 1) {
+        if (occupied[column + offset] !== 0) fail();
+        occupied[column + offset] = rowspan;
+      }
+      column += colspan;
+    }
+
+    let width = MAX_TABLE_COLUMNS;
+    while (width > 0 && occupied[width - 1] === 0) width -= 1;
+    if (rowIndex === 0) tableWidth = width;
+    if (width === 0 || width !== tableWidth) fail();
+    for (let index = 0; index < width; index += 1) {
+      if (occupied[index] === 0) fail();
+      occupied[index] -= 1;
+    }
+  }
 }
 
 function normalizeLinkAttrs(value: unknown): PostMark["attrs"] {
@@ -249,7 +329,7 @@ function normalizeBlockContent(
   context: ValidationContext,
 ): PostNode[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_DOCUMENT_NODES) fail();
-  return value.map((child) => normalizeNode(child, parent, depth + 1, context));
+  return Array.from(value, (child) => normalizeNode(child, parent, depth + 1, context));
 }
 
 function normalizeInlineContent(
@@ -260,7 +340,7 @@ function normalizeInlineContent(
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > MAX_DOCUMENT_NODES) fail();
   if (value.length === 0) return undefined;
-  return value.map((child) => normalizeNode(child, "inline", depth + 1, context));
+  return Array.from(value, (child) => normalizeNode(child, "inline", depth + 1, context));
 }
 
 function normalizeNode(
@@ -321,6 +401,24 @@ function normalizeNode(
       if (content[0].type !== "paragraph") fail();
       return { type: "listItem", content };
     }
+    case "table": {
+      if (!Array.isArray(node.content) || node.content.length === 0 || node.content.length > MAX_TABLE_ROWS) fail();
+      const content = Array.from(node.content, (child) => normalizeNode(child, "table", depth + 1, context));
+      validateTableGeometry(content);
+      return { type: "table", content };
+    }
+    case "tableRow": {
+      if (!Array.isArray(node.content) || node.content.length > MAX_TABLE_COLUMNS) fail();
+      const content = Array.from(node.content, (child) => normalizeNode(child, "tableRow", depth + 1, context));
+      return { type: "tableRow", content };
+    }
+    case "tableCell":
+    case "tableHeader":
+      return {
+        type,
+        attrs: normalizeTableCellAttrs(node.attrs),
+        content: normalizeBlockContent(node.content, type, depth, context),
+      };
     default:
       fail();
   }
@@ -350,7 +448,10 @@ export function normalizePostDocument(value: unknown): PostDocument {
   const context: ValidationContext = { nodes: 0, textLength: 0, hasVisibleContent: false };
   const normalized = content.map((child) => normalizeNode(child, "doc", 1, context));
   if (!context.hasVisibleContent) throw new PostContentValidationError(EMPTY_DOCUMENT_MESSAGE);
-  return { type: "doc", content: normalized };
+  const normalizedDocument: PostDocument = { type: "doc", content: normalized };
+  // Added canonical defaults must not produce a body that fails on its next read.
+  if (JSON.stringify(normalizedDocument).length > MAX_POST_DOCUMENT_JSON_CHARACTERS) fail();
+  return normalizedDocument;
 }
 
 export const POST_DOCUMENT_PREVIEW_MAX_CHARACTERS = 560;
@@ -402,6 +503,21 @@ function sliceCodePoints(text: string, limit: number): { text: string; count: nu
   return { text: text.slice(0, offset), count };
 }
 
+function cloneTablePrefix(table: PostNode, state: { remaining: number }): PostNode {
+  return {
+    ...table,
+    content: table.content?.map((row) => ({
+      ...row,
+      content: row.content?.map((cell) => ({
+        ...cell,
+        content: state.remaining > 0
+          ? cloneDocumentPrefix(cell.content ?? [], state)
+          : [{ type: "paragraph" }],
+      })),
+    })),
+  };
+}
+
 function cloneDocumentPrefix(nodes: PostNode[], state: { remaining: number }): PostNode[] {
   const prefix: PostNode[] = [];
 
@@ -418,6 +534,13 @@ function cloneDocumentPrefix(nodes: PostNode[], state: { remaining: number }): P
       continue;
     }
 
+    // A truncated table must retain every row, cell and span. Only cell block
+    // contents are cut; omitted cells cannot mount hidden text or links.
+    if (node.type === "table") {
+      prefix.push(cloneTablePrefix(node, state));
+      continue;
+    }
+
     if (node.content) {
       prefix.push({ ...node, content: cloneDocumentPrefix(node.content, state) });
       continue;
@@ -431,9 +554,9 @@ function cloneDocumentPrefix(nodes: PostNode[], state: { remaining: number }): P
 
 /**
  * Returns the original document when it fits, otherwise an immutable rich-text
- * tree prefix. The retained nodes keep their structure, attributes and marks;
- * omitted siblings never need to be rendered and non-BMP characters are never
- * split because the limit is measured in Unicode code points.
+ * tree prefix. Retained nodes keep their attributes and marks; tables retain
+ * their full grid with empty paragraphs in omitted cells, never hidden text or
+ * links. Non-BMP characters are never split: the limit counts Unicode code points.
  */
 export function truncatePostDocument(
   document: PostDocument,

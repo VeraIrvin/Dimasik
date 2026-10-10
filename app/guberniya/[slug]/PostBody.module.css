@@ -1,5 +1,6 @@
 .body {
   min-width: 0;
+  max-width: 100%;
   color: var(--ink);
   font-size: 16px;
   line-height: 1.75;
@@ -64,4 +65,44 @@
 
 .body a:hover {
   text-decoration-color: currentColor;
+}
+
+.tableWrapper {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 18px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.tableWrapper:focus-visible {
+  outline: 2px solid var(--accent, #6f5a2b);
+  outline-offset: 2px;
+}
+
+.tableWrapper table {
+  width: 100%;
+  min-width: 300px;
+  max-width: none;
+  border-collapse: collapse;
+}
+
+.tableWrapper td,
+.tableWrapper th {
+  min-width: 100px;
+  padding: 8px 12px;
+  border: 1px solid var(--line, #d5d1c7);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.tableWrapper th {
+  background: #f3efe6;
+  font-weight: 600;
+  text-align: left;
+}
+
+.tableWrapper td > :last-child,
+.tableWrapper th > :last-child {
+  margin-bottom: 0;
 }

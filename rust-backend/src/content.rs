@@ -9,6 +9,9 @@ const MAX_DOCUMENT_NODES: usize = 5_000;
 const MAX_DOCUMENT_TEXT: usize = 100_000;
 const MAX_LINK_HREF_LENGTH: usize = 2_048;
 const MAX_LINK_TITLE_LENGTH: usize = 512;
+const MAX_TABLE_ROWS: usize = 100;
+const MAX_TABLE_COLUMNS: usize = 100;
+const MAX_TABLE_COLUMN_WIDTH: usize = 10_000;
 
 pub(crate) const EMPTY_DOCUMENT_MESSAGE: &str = "Текст публикации не должен быть пустым.";
 const INVALID_DOCUMENT_MESSAGE: &str = "Некорректное содержимое публикации.";
@@ -17,6 +20,39 @@ const INVALID_DOCUMENT_MESSAGE: &str = "Некорректное содержи�
 pub struct ContentError(pub &'static str);
 
 type CResult<T> = Result<T, ContentError>;
+
+#[derive(Default)]
+struct JsonCharacterCount(usize);
+
+impl std::io::Write for JsonCharacterCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // JSON is UTF-8. Count leading bytes, with astral code points counting
+        // twice; continuation bytes count zero even across writer chunks.
+        for byte in bytes {
+            self.0 += match *byte {
+                0x00..=0x7f | 0xc0..=0xef => 1,
+                0xf0..=0xff => 2,
+                _ => 0,
+            };
+            if self.0 > MAX_POST_DOCUMENT_JSON_CHARACTERS {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    INVALID_DOCUMENT_MESSAGE,
+                ));
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_document_json_size(value: &Value) -> CResult<()> {
+    serde_json::to_writer(JsonCharacterCount::default(), value)
+        .map_err(|_| ContentError(INVALID_DOCUMENT_MESSAGE))
+}
 
 fn fail<T>() -> CResult<T> {
     Err(ContentError(INVALID_DOCUMENT_MESSAGE))
@@ -30,6 +66,9 @@ enum Parent {
     OrderedList,
     ListItem,
     Inline,
+    Table,
+    TableRow,
+    TableCell,
 }
 
 struct Context {
@@ -64,6 +103,8 @@ fn node_keys(node_type: &str) -> Option<&'static [&'static str]> {
         "bulletList" => &["type", "content"],
         "orderedList" => &["type", "attrs", "content"],
         "listItem" => &["type", "content"],
+        "table" | "tableRow" => &["type", "content"],
+        "tableCell" | "tableHeader" => &["type", "attrs", "content"],
         "text" => &["type", "text", "marks"],
         "hardBreak" => &["type"],
         _ => return None,
@@ -72,11 +113,13 @@ fn node_keys(node_type: &str) -> Option<&'static [&'static str]> {
 
 fn allowed_parent(node_type: &str, parent: Parent) -> bool {
     match node_type {
-        "paragraph" | "heading" | "blockquote" | "bulletList" | "orderedList" => matches!(
+        "paragraph" | "heading" | "blockquote" | "bulletList" | "orderedList" | "table" => matches!(
             parent,
-            Parent::Doc | Parent::Blockquote | Parent::ListItem
+            Parent::Doc | Parent::Blockquote | Parent::ListItem | Parent::TableCell
         ),
         "listItem" => matches!(parent, Parent::BulletList | Parent::OrderedList),
+        "tableRow" => matches!(parent, Parent::Table),
+        "tableCell" | "tableHeader" => matches!(parent, Parent::TableRow),
         "text" | "hardBreak" => matches!(parent, Parent::Inline),
         _ => false,
     }
@@ -303,7 +346,6 @@ fn normalize_alignment_attrs(value: Option<&Value>) -> CResult<Option<Value>> {
     }
     match attrs.get("textAlign") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(alignment)) if alignment == "left" => Ok(None),
         Some(Value::String(alignment))
             if matches!(alignment.as_str(), "left" | "center" | "right" | "justify") =>
         {
@@ -332,7 +374,6 @@ fn normalize_heading_attrs(value: Option<&Value>) -> CResult<Value> {
     out.insert("level".to_string(), Value::from(level));
     match attrs.get("textAlign") {
         None | Some(Value::Null) => {}
-        Some(Value::String(alignment)) if alignment == "left" => {}
         Some(Value::String(alignment))
             if matches!(alignment.as_str(), "left" | "center" | "right" | "justify") =>
         {
@@ -376,6 +417,124 @@ fn normalize_ordered_list_attrs(value: Option<&Value>) -> CResult<Option<Value>>
             Ok(Some(Value::Object(out)))
         }
     }
+}
+
+fn bounded_integer(value: &Value, minimum: usize, maximum: usize) -> CResult<usize> {
+    match value.as_f64() {
+        Some(number)
+            if number.is_finite()
+                && number.fract() == 0.0
+                && (minimum as f64..=maximum as f64).contains(&number) =>
+        {
+            Ok(number as usize)
+        }
+        _ => fail(),
+    }
+}
+
+fn normalize_table_cell_attrs(value: Option<&Value>) -> CResult<Value> {
+    let attrs = value.map(as_record).transpose()?;
+    if attrs.is_some_and(|attrs| {
+        !has_only_keys(attrs, &["colspan", "rowspan", "colwidth", "align"])
+    }) {
+        return fail();
+    }
+    let get = |key: &str| attrs.and_then(|attrs| attrs.get(key));
+    let colspan = get("colspan")
+        .map(|value| bounded_integer(value, 1, MAX_TABLE_COLUMNS))
+        .transpose()?
+        .unwrap_or(1);
+    let rowspan = get("rowspan")
+        .map(|value| bounded_integer(value, 1, MAX_TABLE_ROWS))
+        .transpose()?
+        .unwrap_or(1);
+    let colwidth = match get("colwidth") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::Array(widths)) if widths.len() == colspan => {
+            let mut normalized = Vec::with_capacity(widths.len());
+            for width in widths {
+                normalized.push(Value::from(bounded_integer(width, 0, MAX_TABLE_COLUMN_WIDTH)?));
+            }
+            Value::Array(normalized)
+        }
+        _ => return fail(),
+    };
+    let align = match get("align") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(align)) if matches!(align.as_str(), "left" | "center" | "right") => {
+            Value::String(align.clone())
+        }
+        _ => return fail(),
+    };
+    Ok(json!({
+        "colspan": colspan,
+        "rowspan": rowspan,
+        "colwidth": colwidth,
+        "align": align,
+    }))
+}
+
+fn normalize_table_children(
+    node: &Map<String, Value>,
+    parent: Parent,
+    depth: usize,
+    context: &mut Context,
+) -> CResult<Value> {
+    let Some(Value::Array(items)) = node.get("content") else {
+        return fail();
+    };
+    let maximum = if parent == Parent::Table { MAX_TABLE_ROWS } else { MAX_TABLE_COLUMNS };
+    if items.len() > maximum || (parent == Parent::Table && items.is_empty()) {
+        return fail();
+    }
+    let mut normalized = Vec::with_capacity(items.len());
+    for child in items {
+        normalized.push(normalize_node(child, parent, depth + 1, context)?);
+    }
+    if parent == Parent::Table {
+        validate_table_geometry(&normalized)?;
+    }
+    Ok(Value::Array(normalized))
+}
+
+fn validate_table_geometry(rows: &[Value]) -> CResult<()> {
+    // A bounded rolling row tracks remaining rowspan coverage. Never allocate
+    // a width × height map from untrusted dimensions or span attributes.
+    let mut occupancy = [0usize; MAX_TABLE_COLUMNS];
+    let mut width = 0;
+    for (row_index, row) in rows.iter().enumerate() {
+        let cells = row["content"].as_array().ok_or(ContentError(INVALID_DOCUMENT_MESSAGE))?;
+        let mut column = 0;
+        for cell in cells {
+            while column < MAX_TABLE_COLUMNS && occupancy[column] != 0 {
+                column += 1;
+            }
+            // Attributes have already been canonicalised into bounded integers.
+            let colspan = cell["attrs"]["colspan"].as_u64().unwrap() as usize;
+            let rowspan = cell["attrs"]["rowspan"].as_u64().unwrap() as usize;
+            let end = column + colspan;
+            if end > MAX_TABLE_COLUMNS || rowspan > rows.len() - row_index {
+                return fail();
+            }
+            if occupancy[column..end].iter().any(|remaining| *remaining != 0) {
+                return fail();
+            }
+            occupancy[column..end].fill(rowspan);
+            column = end;
+        }
+        let row_width = occupancy.iter().rposition(|remaining| *remaining != 0)
+            .map_or(0, |column| column + 1);
+        if row_index == 0 {
+            width = row_width;
+        }
+        if width == 0 || row_width != width || occupancy[..width].contains(&0) {
+            return fail();
+        }
+        for remaining in &mut occupancy[..width] {
+            *remaining -= 1;
+        }
+    }
+    Ok(())
 }
 
 fn normalize_inline_content(
@@ -544,6 +703,16 @@ fn normalize_node(
             out.insert("content".to_string(), content);
             Ok(Value::Object(out))
         }
+        "table" | "tableRow" => {
+            let parent = if node_type == "table" { Parent::Table } else { Parent::TableRow };
+            let content = normalize_table_children(node, parent, depth, context)?;
+            Ok(json!({ "type": node_type, "content": content }))
+        }
+        "tableCell" | "tableHeader" => {
+            let attrs = normalize_table_cell_attrs(node.get("attrs"))?;
+            let content = normalize_block_content(node, Parent::TableCell, depth, context)?;
+            Ok(json!({ "type": node_type, "attrs": attrs, "content": content }))
+        }
         _ => fail(),
     }
 }
@@ -552,11 +721,7 @@ fn normalize_node(
 /// TipTap JSON body, keeping only whitelisted nodes, marks, attributes and link
 /// protocols while enforcing every resource bound before the body is stored.
 pub fn normalize_post_document(value: &Value) -> Result<Value, ContentError> {
-    let serialized =
-        serde_json::to_string(value).map_err(|_| ContentError(INVALID_DOCUMENT_MESSAGE))?;
-    if utf16_len(&serialized) > MAX_POST_DOCUMENT_JSON_CHARACTERS {
-        return fail();
-    }
+    validate_document_json_size(value)?;
 
     let document = as_record(value)?;
     if document.get("type").and_then(Value::as_str) != Some("doc") {
@@ -591,7 +756,11 @@ pub fn normalize_post_document(value: &Value) -> Result<Value, ContentError> {
     let mut out = Map::new();
     out.insert("type".to_string(), Value::String("doc".to_string()));
     out.insert("content".to_string(), Value::Array(normalized));
-    Ok(Value::Object(out))
+    let document = Value::Object(out);
+    // Default cell attributes can enlarge the input; persisted documents must
+    // also fit the cap so subsequent reads and re-normalisation remain valid.
+    validate_document_json_size(&document)?;
+    Ok(document)
 }
 
 /// Validates an optional rich document such as a province description:
@@ -663,6 +832,278 @@ mod tests {
 
     fn paragraph(text: &str) -> Value {
         json!({ "type": "paragraph", "content": [{ "type": "text", "text": text }] })
+    }
+
+    fn table_cell(node_type: &str, attrs: Value, blocks: Vec<Value>) -> Value {
+        json!({ "type": node_type, "attrs": attrs, "content": blocks })
+    }
+
+    fn table_document(rows: Vec<Vec<Value>>) -> Value {
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": rows.into_iter().map(|cells| {
+                    json!({ "type": "tableRow", "content": cells })
+                }).collect::<Vec<_>>()
+            }]
+        })
+    }
+
+    fn simple_table() -> Value {
+        table_document(vec![
+            vec![
+                table_cell("tableHeader", json!({}), vec![paragraph("Название")]),
+                table_cell("tableHeader", json!({}), vec![paragraph("Год")]),
+            ],
+            vec![
+                table_cell("tableCell", json!({}), vec![paragraph("Рязань")]),
+                table_cell("tableCell", json!({}), vec![paragraph("1897")]),
+            ],
+        ])
+    }
+
+    #[test]
+    fn explicit_left_block_alignment_overrides_cell_alignment_and_survives_roundtrip() {
+        for align in ["center", "right"] {
+            let mut paragraph_left = paragraph("Слева");
+            paragraph_left["attrs"] = json!({ "textAlign": "left" });
+            let heading_left = json!({
+                "type": "heading",
+                "attrs": { "level": 2, "textAlign": "left" },
+                "content": [{ "type": "text", "text": "Заголовок слева" }],
+            });
+            let mut document = table_document(vec![vec![table_cell(
+                "tableCell",
+                json!({ "align": align }),
+                vec![
+                    paragraph_left.clone(),
+                    heading_left.clone(),
+                    json!({ "type": "paragraph", "attrs": { "textAlign": null } }),
+                    json!({ "type": "heading", "attrs": { "level": 3, "textAlign": null } }),
+                ],
+            )]]);
+            // Explicit left is preserved outside a table too: no implicit
+            // inherited-context special cases enter document canonicalisation.
+            document["content"].as_array_mut().unwrap().extend([
+                paragraph_left,
+                heading_left,
+            ]);
+            let normalized = normalize_post_document(&document).unwrap();
+            let blocks = &normalized["content"][0]["content"][0]["content"][0]["content"];
+            assert_eq!(blocks[0]["attrs"]["textAlign"], "left");
+            assert_eq!(blocks[1]["attrs"]["textAlign"], "left");
+            assert!(blocks[2].get("attrs").is_none());
+            assert_eq!(blocks[3]["attrs"], json!({ "level": 3 }));
+            assert_eq!(normalized["content"][1]["attrs"]["textAlign"], "left");
+            assert_eq!(normalized["content"][2]["attrs"]["textAlign"], "left");
+            assert_eq!(normalize_post_document(&normalized).unwrap(), normalized);
+        }
+    }
+
+    #[test]
+    fn table_defaults_are_full_canonical_attributes_and_idempotent() {
+        let mut document = simple_table();
+        document["content"][0]["content"][0]["content"][0].as_object_mut().unwrap().remove("attrs");
+        document["content"][0]["content"][0]["content"][1]["attrs"] = json!({
+            "colspan": 1.0, "rowspan": 1.0, "colwidth": [0.0], "align": null,
+        });
+        let normalized = normalize_post_document(&document).unwrap();
+        assert_eq!(normalized["content"][0]["content"][0]["content"][0]["attrs"], json!({
+            "colspan": 1, "rowspan": 1, "colwidth": null, "align": null,
+        }));
+        assert_eq!(normalized["content"][0]["content"][0]["content"][1]["attrs"]["colwidth"], json!([0]));
+        assert_eq!(normalize_post_document(&normalized).unwrap(), normalized);
+        assert!(document["content"][0]["content"][0]["content"][0].get("attrs").is_none());
+    }
+
+    #[test]
+    fn table_spans_empty_covered_rows_nested_blocks_and_marks_survive() {
+        let mut marked = paragraph("Источник");
+        marked["content"][0]["marks"] = json!([
+            { "type": "bold" },
+            { "type": "link", "attrs": { "href": "/source", "target": "_blank" } },
+            { "type": "textStyle", "attrs": { "color": "#ABC" } },
+        ]);
+        let document = table_document(vec![
+            vec![
+                table_cell("tableHeader", json!({
+                    "colspan": 2, "rowspan": 2, "colwidth": [0, 10_000], "align": "center",
+                }), vec![marked]),
+                table_cell("tableHeader", json!({ "align": "right" }), vec![
+                    json!({ "type": "heading", "attrs": { "level": 2 }, "content": [
+                        { "type": "text", "text": "Год" },
+                    ]}),
+                ]),
+            ],
+            vec![table_cell("tableCell", json!({ "align": "left" }), vec![
+                json!({ "type": "paragraph" }),
+                simple_table()["content"][0].clone(),
+                json!({ "type": "bulletList", "content": [
+                    { "type": "listItem", "content": [paragraph("Список")] },
+                ]}),
+            ])],
+            vec![table_cell("tableCell", json!({ "colspan": 3, "rowspan": 2 }), vec![paragraph("Итого")])],
+            vec![],
+        ]);
+        let normalized = normalize_post_document(&document).unwrap();
+        let header = &normalized["content"][0]["content"][0]["content"][0];
+        assert_eq!(header["attrs"], json!({
+            "colspan": 2, "rowspan": 2, "colwidth": [0, 10_000], "align": "center",
+        }));
+        assert_eq!(header["content"][0]["content"][0]["marks"][1]["attrs"], json!({ "href": "/source" }));
+        assert_eq!(header["content"][0]["content"][0]["marks"][2]["attrs"]["color"], "#abc");
+        assert_eq!(normalized["content"][0]["content"][3]["content"], json!([]));
+        assert_eq!(normalize_post_document(&normalized).unwrap(), normalized);
+    }
+
+    #[test]
+    fn table_rejects_untrusted_attributes_and_wrong_structure() {
+        for attrs in [
+            json!(null), json!({ "style": "color:red" }), json!({ "textAlign": "center" }),
+            json!({ "colspan": null }), json!({ "colspan": 0 }), json!({ "colspan": 101 }),
+            json!({ "colspan": 1.5 }), json!({ "colspan": "1" }), json!({ "colspan": true }),
+            json!({ "rowspan": null }), json!({ "rowspan": -1 }), json!({ "rowspan": 101 }),
+            json!({ "rowspan": 1.5 }), json!({ "rowspan": "1" }), json!({ "rowspan": false }),
+            json!({ "colwidth": [] }), json!({ "colwidth": [1, 2] }), json!({ "colwidth": "2" }),
+            json!({ "colwidth": [null] }), json!({ "colwidth": [-1] }),
+            json!({ "colwidth": [10_001] }), json!({ "colwidth": [1.5] }),
+            json!({ "colwidth": ["1"] }), json!({ "colwidth": [true] }),
+            json!({ "align": "justify" }), json!({ "align": "CENTER" }),
+            json!({ "align": "left;position:fixed" }), json!({ "align": 1 }),
+        ] {
+            let mut document = simple_table();
+            document["content"][0]["content"][0]["content"][0]["attrs"] = attrs.clone();
+            assert_eq!(normalize_post_document(&document).unwrap_err().0, INVALID_DOCUMENT_MESSAGE, "{attrs}");
+        }
+        for (pointer, replacement) in [
+            ("/content/0/attrs", json!({})),
+            ("/content/0/content/0/attrs", json!(null)),
+            ("/content/0/content/0/content/0/content", json!([])),
+            ("/content/0/content/0/content/0/content", json!([{ "type": "text", "text": "x" }])),
+            ("/content/0/content/0/content/0/marks", json!([])),
+            ("/content/0/content/0/content/0/type", json!("paragraph")),
+            ("/content/0/content/0/type", json!("tableCell")),
+            ("/content/0/content/0/content/0/content/0/type", json!("tableRow")),
+            ("/content/0/content", json!(null)),
+            ("/content/0/content/0/content", json!(null)),
+        ] {
+            let mut document = simple_table();
+            if pointer == "/content/0/attrs" {
+                document["content"][0]["attrs"] = replacement;
+            } else if pointer == "/content/0/content/0/attrs" {
+                document["content"][0]["content"][0]["attrs"] = replacement;
+            } else if pointer.ends_with("/marks") {
+                document["content"][0]["content"][0]["content"][0]["marks"] = replacement;
+            } else {
+                *document.pointer_mut(pointer).unwrap() = replacement;
+            }
+            assert_eq!(normalize_post_document(&document).unwrap_err().0, INVALID_DOCUMENT_MESSAGE, "{pointer}");
+        }
+        for node in ["tableRow", "tableCell", "tableHeader"] {
+            assert!(normalize_post_document(&json!({
+                "type": "doc", "content": [{ "type": node, "content": [paragraph("x")] }],
+            })).is_err());
+        }
+    }
+
+    #[test]
+    fn table_rejects_overlapping_ragged_holey_and_out_of_bounds_grids() {
+        let plain = || table_cell("tableCell", json!({}), vec![paragraph("x")]);
+        let span = |colspan, rowspan| table_cell("tableCell", json!({
+            "colspan": colspan, "rowspan": rowspan,
+        }), vec![paragraph("x")]);
+        for document in [
+            table_document(vec![]),
+            table_document(vec![vec![]]),
+            table_document(vec![vec![plain(), plain()], vec![plain()]]),
+            table_document(vec![vec![plain()], vec![plain(), plain()]]),
+            table_document(vec![vec![span(1, 2)]]),
+            table_document(vec![vec![plain(), span(1, 2)], vec![]]),
+            table_document(vec![vec![plain(), span(1, 2)], vec![span(2, 1)]]),
+            table_document(vec![vec![span(100, 1), plain()]]),
+            table_document(vec![vec![plain(); 101]]),
+            table_document(vec![vec![plain()]; 101]),
+        ] {
+            assert_eq!(normalize_post_document(&document).unwrap_err().0, INVALID_DOCUMENT_MESSAGE, "{document}");
+        }
+        // Maximum dimensions are possible without materialising a 100×100 map.
+        let mut rows = vec![vec![span(100, 100)]];
+        rows.extend(vec![vec![]; 99]);
+        let normalized = normalize_post_document(&table_document(rows)).unwrap();
+        assert_eq!(normalized["content"][0]["content"].as_array().unwrap().len(), 100);
+    }
+
+    #[test]
+    fn table_blank_content_and_existing_resource_limits_are_unchanged() {
+        let blank = table_document(vec![vec![
+            table_cell("tableCell", json!({}), vec![json!({ "type": "paragraph" })]),
+        ]]);
+        assert_eq!(normalize_post_document(&blank).unwrap_err().0, EMPTY_DOCUMENT_MESSAGE);
+        assert_eq!(normalize_optional_document(&blank).unwrap(), None);
+        let mut invalid_blank = blank.clone();
+        invalid_blank["content"][0]["content"][0]["content"][0]["attrs"]["colspan"] = json!(0);
+        assert_eq!(normalize_optional_document(&invalid_blank).unwrap_err().0, INVALID_DOCUMENT_MESSAGE);
+
+        let nest = |count| {
+            let mut block = paragraph("x");
+            for _ in 0..count {
+                block = table_document(vec![vec![
+                    table_cell("tableCell", json!({}), vec![block]),
+                ]])["content"][0].clone();
+            }
+            json!({ "type": "doc", "content": [block] })
+        };
+        assert!(normalize_post_document(&nest(6)).is_ok());
+        assert_eq!(normalize_post_document(&nest(7)).unwrap_err().0, INVALID_DOCUMENT_MESSAGE);
+
+        let long = table_document(vec![vec![
+            table_cell("tableCell", json!({}), vec![paragraph(&"x".repeat(MAX_DOCUMENT_TEXT + 1))]),
+        ]]);
+        assert_eq!(normalize_post_document(&long).unwrap_err().0, INVALID_DOCUMENT_MESSAGE);
+
+        let mut crowded = simple_table();
+        crowded["content"].as_array_mut().unwrap().extend(
+            (0..MAX_DOCUMENT_NODES - 1).map(|_| json!({ "type": "paragraph" })),
+        );
+        assert!(serde_json::to_string(&crowded).unwrap().len() < MAX_POST_DOCUMENT_JSON_CHARACTERS);
+        assert_eq!(normalize_post_document(&crowded).unwrap_err().0, INVALID_DOCUMENT_MESSAGE);
+
+        let mut oversized = simple_table();
+        oversized["content"].as_array_mut().unwrap().extend(
+            (0..4_500).map(|_| json!({ "type": "paragraph", "attrs": { "textAlign": null } })),
+        );
+        assert_eq!(normalize_post_document(&oversized).unwrap_err().0, INVALID_DOCUMENT_MESSAGE);
+    }
+
+    #[test]
+    fn json_size_counter_matches_utf16_serialization_and_exact_boundary() {
+        for value in [
+            json!({ "text": "Рязань 😀\n\"\\", "nested": [null, true, 1.5] }),
+            json!("😀".repeat(MAX_POST_DOCUMENT_JSON_CHARACTERS / 2 - 1)),
+        ] {
+            let mut counter = JsonCharacterCount::default();
+            serde_json::to_writer(&mut counter, &value).unwrap();
+            assert_eq!(counter.0, utf16_len(&serde_json::to_string(&value).unwrap()));
+            assert!(validate_document_json_size(&value).is_ok());
+        }
+        assert!(validate_document_json_size(&json!(
+            "😀".repeat(MAX_POST_DOCUMENT_JSON_CHARACTERS / 2)
+        )).is_err());
+    }
+
+    #[test]
+    fn canonical_table_json_also_must_fit_the_serialized_limit() {
+        let cell = table_cell("tableCell", json!({}), vec![json!({ "type": "paragraph" })]);
+        let mut document = table_document(vec![vec![cell; 20]; 100]);
+        document["content"][0]["content"][0]["content"][0]["content"][0] = paragraph("видимый текст");
+        assert!(utf16_len(&serde_json::to_string(&document).unwrap()) < MAX_POST_DOCUMENT_JSON_CHARACTERS);
+        // Fewer than 5,000 nodes and valid 100×20 geometry: only canonical JSON
+        // growth (full four attrs on every cell) makes this document invalid.
+        assert_eq!(normalize_post_document(&document).unwrap_err().0, INVALID_DOCUMENT_MESSAGE);
+
+        let canonical = normalize_post_document(&simple_table()).unwrap();
+        assert_eq!(normalize_post_document(&canonical).unwrap(), canonical);
     }
 
     #[test]

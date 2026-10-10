@@ -69,7 +69,7 @@ export default function PostFeed({
           const settlement = post.settlementId ? settlementById[post.settlementId] : null;
           const districtName = post.uyezdId ? districtNames[post.uyezdId] : null;
           const hasMetadata =
-            post.category || districtName || settlement || post.year || post.archiveReference;
+            post.category || districtName || settlement || post.year || post.author || post.archiveReference;
 
           return (
             <article key={post.id} id={`post-${post.id}`} className={styles.post}>
@@ -98,7 +98,8 @@ export default function PostFeed({
                     </>
                   ) : null}
                   {post.year ? <><dt>Год</dt><dd>{post.year}</dd></> : null}
-                  {post.archiveReference ? <><dt>Архивный шифр</dt><dd>{post.archiveReference}</dd></> : null}
+                  {post.author ? <><dt>Автор</dt><dd>{post.author}</dd></> : null}
+                  {post.archiveReference ? <><dt>Источник</dt><dd>{post.archiveReference}</dd></> : null}
                 </dl>
               ) : null}
               <PostImageGallery images={post.images} />

@@ -8,6 +8,26 @@
   color: #55514a;
 }
 
+.nameInput {
+  width: 100%;
+  margin-bottom: 7px;
+  padding: 9px 10px;
+  border: 1px solid #c9c7c0;
+  border-radius: 3px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+}
+
+.nameInput:focus-visible {
+  border-color: #6f5a2b;
+}
+
+.nameInput:disabled {
+  opacity: 0.6;
+}
+
 .form {
   display: grid;
   gap: 8px;

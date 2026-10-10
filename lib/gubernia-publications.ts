@@ -43,6 +43,7 @@ export type GuberniaPost = {
   uyezdId: string | null;
   settlementId: string | null;
   year: string;
+  author: string;
   archiveReference: string;
   /** Posts stored before categories existed stay null until an edit picks one. */
   category: PostCategory | null;
