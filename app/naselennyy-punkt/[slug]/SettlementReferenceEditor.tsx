@@ -15,6 +15,9 @@ type SettlementReferenceEditorProps = {
   settlementId: string;
   guberniaId: string;
   settlementName: string;
+  settlementCoordinates: string;
+  settlementType: string | null;
+  settlementTypes: string[];
   backHref: string;
   /** Element id of the page slot that hosts the admin row, above the details. */
   adminSlotId: string;
@@ -38,6 +41,9 @@ export default function SettlementReferenceEditor({
   settlementId,
   guberniaId,
   settlementName,
+  settlementCoordinates,
+  settlementType,
+  settlementTypes,
   backHref,
   adminSlotId,
 }: SettlementReferenceEditorProps) {
@@ -46,6 +52,9 @@ export default function SettlementReferenceEditor({
       initialBody={initialBody}
       initialImages={initialImages}
       settlementName={settlementName}
+      settlementCoordinates={settlementCoordinates}
+      settlementType={settlementType}
+      settlementTypes={settlementTypes}
       imageSupport
       imagesAriaLabel="Изображения справки"
       isAdmin={isAdmin}

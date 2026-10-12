@@ -27,6 +27,25 @@ import styles from "./AboutContentEditor.module.css";
 
 const KEYBOARD_HINT = "Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца.";
 const SETTLEMENT_NAME_MAX_LENGTH = 200;
+
+type Coordinates = {
+  latitude: number;
+  longitude: number;
+};
+
+/** Mirrors the settlement creation field's accepted "latitude, longitude" format. */
+function parseCoordinates(raw: string): Coordinates | null {
+  const parts = raw.split(",");
+  if (parts.length !== 2) return null;
+  const latitudePart = parts[0].trim();
+  const longitudePart = parts[1].trim();
+  if (!latitudePart || !longitudePart) return null;
+  const latitude = Number(latitudePart);
+  const longitude = Number(longitudePart);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+  return { latitude, longitude };
+}
 function documentHasVisibleText(document: PostDocument | null) {
   if (!document) return false;
   return nodesHaveVisibleText(document.content);
@@ -74,6 +93,10 @@ type RichPageContentEditorProps = {
    * request. Other shared-editor consumers keep their existing text contract.
    */
   settlementName?: string;
+  /** Opts the settlement form into coordinates/type editing in the same PATCH. */
+  settlementCoordinates?: string;
+  settlementType?: string | null;
+  settlementTypes?: string[];
   /**
    * Opens a long document as a truncated rich-text prefix (~560 characters)
    * with a «Читать далее» toggle instead of the full body. The prefix renders
@@ -113,11 +136,20 @@ export function RichPageContentEditor({
   initialImages = [],
   imagesAriaLabel = "Изображения",
   settlementName,
+  settlementCoordinates,
+  settlementType,
+  settlementTypes = [],
 }: RichPageContentEditorProps) {
   const router = useRouter();
   const [body, setBody] = useState<PostDocument | null>(initialBody);
   const [images, setImages] = useState<PostImage[]>(initialImages);
   const [currentSettlementName, setCurrentSettlementName] = useState(settlementName ?? "");
+  const [currentSettlementCoordinates, setCurrentSettlementCoordinates] = useState(
+    settlementCoordinates ?? "",
+  );
+  const [currentSettlementType, setCurrentSettlementType] = useState<string | null>(
+    settlementType ?? null,
+  );
   const [editing, setEditing] = useState(false);
   const [status, setStatus] = useState("");
   const [previewExpanded, setPreviewExpanded] = useState(false);
@@ -134,6 +166,13 @@ export function RichPageContentEditor({
   useEffect(() => {
     if (settlementName !== undefined) setCurrentSettlementName(settlementName);
   }, [settlementName]);
+
+  useEffect(() => {
+    if (settlementCoordinates !== undefined) {
+      setCurrentSettlementCoordinates(settlementCoordinates);
+      setCurrentSettlementType(settlementType ?? null);
+    }
+  }, [settlementCoordinates, settlementType]);
 
   useEffect(() => {
     if (!returnFocus || editing || !isAdmin) return;
@@ -156,10 +195,16 @@ export function RichPageContentEditor({
     nextBody: PostDocument | null,
     nextImages: PostImage[],
     nextSettlementName?: string,
+    nextSettlementCoordinates?: string,
+    nextSettlementType?: string | null,
   ) {
     setBody(nextBody);
     setImages(nextImages);
     if (nextSettlementName !== undefined) setCurrentSettlementName(nextSettlementName);
+    if (nextSettlementCoordinates !== undefined) {
+      setCurrentSettlementCoordinates(nextSettlementCoordinates);
+      setCurrentSettlementType(nextSettlementType ?? null);
+    }
     setPreviewExpanded(false);
     setStatus("Изменения сохранены.");
     finishEditing();
@@ -221,6 +266,11 @@ export function RichPageContentEditor({
           initialImages={images}
           imageSupport={imageSupport}
           settlementName={settlementName === undefined ? undefined : currentSettlementName}
+          settlementCoordinates={
+            settlementCoordinates === undefined ? undefined : currentSettlementCoordinates
+          }
+          settlementType={currentSettlementType}
+          settlementTypes={settlementTypes}
           endpoint={endpoint}
           editorLabel={editorLabel}
           emptyValidationMessage={emptyValidationMessage}
@@ -268,13 +318,23 @@ type RichPageContentFormProps = {
   editorLabel: string;
   emptyValidationMessage: string;
   saveErrorMessage: string;
-  onSaved: (body: PostDocument | null, images: PostImage[], settlementName?: string) => void;
+  onSaved: (
+    body: PostDocument | null,
+    images: PostImage[],
+    settlementName?: string,
+    settlementCoordinates?: string,
+    settlementType?: string | null,
+  ) => void;
   onCancel: () => void;
   /** When set, the form also saves the ordered image set and mounts the picker. */
   imageSupport?: boolean;
   initialImages?: PostImage[];
   /** Enables the settlement-name field and includes its value in the PATCH. */
   settlementName?: string;
+  /** Enables settlement coordinates/type fields and includes them in the PATCH. */
+  settlementCoordinates?: string;
+  settlementType?: string | null;
+  settlementTypes?: string[];
 };
 
 function RichPageContentForm({
@@ -288,11 +348,25 @@ function RichPageContentForm({
   imageSupport = false,
   initialImages = [],
   settlementName,
+  settlementCoordinates,
+  settlementType,
+  settlementTypes = [],
 }: RichPageContentFormProps) {
   const editor = usePostDocumentEditor(initialBody ?? "", editorLabel);
   const nameId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState(settlementName ?? "");
+  const coordinatesId = useId();
+  const typeId = useId();
+  const coordinatesRef = useRef<HTMLInputElement>(null);
+  const typeRef = useRef<HTMLSelectElement>(null);
+  const [coordinates, setCoordinates] = useState(settlementCoordinates ?? "");
+  const [typeValue, setTypeValue] = useState(settlementType ?? "");
+  const metadataEnabled = settlementCoordinates !== undefined;
+  const typeOptions =
+    settlementType && !settlementTypes.includes(settlementType)
+      ? [settlementType, ...settlementTypes]
+      : settlementTypes;
   const richTextFieldRef = useRef<RichTextFieldHandle>(null);
   const imageUploaderRef = useRef<PostImageUploaderHandle>(null);
   const [saving, setSaving] = useState(false);
@@ -323,6 +397,18 @@ function RichPageContentForm({
       nameRef.current?.focus();
       return;
     }
+    const parsedCoordinates = metadataEnabled ? parseCoordinates(coordinates) : null;
+    if (metadataEnabled && !parsedCoordinates) {
+      setError("Укажите координаты в формате «широта, долгота», например 56.1234, 40.5678.");
+      coordinatesRef.current?.focus();
+      return;
+    }
+    const nextType = metadataEnabled && typeValue ? typeValue : undefined;
+    if (metadataEnabled && settlementType !== null && !nextType) {
+      setError("Выберите тип населённого пункта.");
+      typeRef.current?.focus();
+      return;
+    }
     const imageUploader = imageSupport ? imageUploaderRef.current : null;
     if (imageUploader?.isBlocked()) {
       setError("Дождитесь завершения загрузки изображений или удалите файлы с ошибкой.");
@@ -330,15 +416,15 @@ function RichPageContentForm({
     }
     const imageIds = imageUploader?.getImageIds() ?? [];
     const referenceIsEmpty = !editor.getText().trim() && imageIds.length === 0;
-    const nameOnlySave =
+    const metadataOnlySave =
       nextName !== undefined &&
       !documentHasVisibleText(initialBody) &&
       initialImages.length === 0 &&
       referenceIsEmpty;
-    // A name-only save is permitted only for a record whose reference was
+    // A metadata-only save is permitted only for a record whose reference was
     // already empty when this form opened. Existing content is never cleared
     // by omitting the reference fields.
-    if (referenceIsEmpty && !nameOnlySave) {
+    if (referenceIsEmpty && !metadataOnlySave) {
       setError(emptyValidationMessage);
       editor.chain().focus().run();
       return;
@@ -355,10 +441,20 @@ function RichPageContentForm({
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify(
-          nameOnlySave
-            ? { name: nextName }
+          metadataOnlySave
+            ? {
+                name: nextName,
+                ...(parsedCoordinates
+                  ? { coordinates: `${parsedCoordinates.latitude}, ${parsedCoordinates.longitude}` }
+                  : {}),
+                ...(nextType === undefined ? {} : { type: nextType }),
+              }
             : {
                 ...(nextName === undefined ? {} : { name: nextName }),
+                ...(parsedCoordinates
+                  ? { coordinates: `${parsedCoordinates.latitude}, ${parsedCoordinates.longitude}` }
+                  : {}),
+                ...(nextType === undefined ? {} : { type: nextType }),
                 body: editor.getJSON(),
                 // The ordered final set is sent every time: kept images in order plus
                 // new uploads. Omission would leave stored images untouched instead.
@@ -375,9 +471,11 @@ function RichPageContentForm({
         body?: PostDocument | null;
         images?: PostImage[];
         name?: unknown;
+        coordinates?: unknown;
+        type?: unknown;
       };
       const nextImages = Array.isArray(data.images) ? data.images : [];
-      if (!data.body && (!imageSupport || nextImages.length === 0) && !nameOnlySave) {
+      if (!data.body && (!imageSupport || nextImages.length === 0) && !metadataOnlySave) {
         setError("Сервер вернул некорректный ответ. Попробуйте ещё раз.");
         return;
       }
@@ -387,9 +485,23 @@ function RichPageContentForm({
           : typeof data.name === "string" && data.name.trim()
             ? data.name
             : nextName;
+      let savedCoordinates: string | undefined;
+      let savedType: string | null | undefined;
+      if (metadataEnabled) {
+        if (
+          typeof data.coordinates !== "string" ||
+          !parseCoordinates(data.coordinates) ||
+          (typeof data.type !== "string" && data.type !== null)
+        ) {
+          setError("Сервер вернул некорректный ответ. Попробуйте ещё раз.");
+          return;
+        }
+        savedCoordinates = data.coordinates;
+        savedType = data.type;
+      }
       // The stored record now owns the new uploads: never clean them up as pending.
       imageUploaderRef.current?.claimAll();
-      onSaved(data.body ?? null, nextImages, savedName);
+      onSaved(data.body ?? null, nextImages, savedName, savedCoordinates, savedType);
     } catch {
       setError("Не удалось связаться с сервером.");
     } finally {
@@ -456,6 +568,53 @@ function RichPageContentForm({
             }}
           />
         </>
+      ) : null}
+
+      {metadataEnabled ? (
+        <div className={styles.metadataFields}>
+          <label className={styles.metadataField} htmlFor={coordinatesId}>
+            <span className={styles.bodyLabel}>Координаты</span>
+            <input
+              ref={coordinatesRef}
+              id={coordinatesId}
+              name="coordinates"
+              className={styles.nameInput}
+              value={coordinates}
+              inputMode="decimal"
+              autoComplete="off"
+              spellCheck={false}
+              required
+              disabled={saving}
+              onChange={(event) => {
+                setCoordinates(event.target.value);
+                setError("");
+              }}
+            />
+          </label>
+          <label className={styles.metadataField} htmlFor={typeId}>
+            <span className={styles.bodyLabel}>Тип населённого пункта</span>
+            <select
+              ref={typeRef}
+              id={typeId}
+              name="type"
+              className={styles.nameInput}
+              value={typeValue}
+              required={settlementType !== null}
+              disabled={saving}
+              onChange={(event) => {
+                setTypeValue(event.target.value);
+                setError("");
+              }}
+            >
+              {settlementType === null ? <option value="">Не указан</option> : null}
+              {typeOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       ) : null}
 
       <span className={styles.bodyLabel}>{editorLabel}</span>

@@ -118,6 +118,9 @@ export default async function SettlementPage({
             settlementId={settlement.id}
             guberniaId={gubernia.id}
             settlementName={settlement.name}
+            settlementCoordinates={`${settlement.latitude}, ${settlement.longitude}`}
+            settlementType={settlement.type}
+            settlementTypes={settings.settlementTypes}
             backHref={backHref}
             adminSlotId={SETTLEMENT_ADMIN_SLOT_ID}
           />

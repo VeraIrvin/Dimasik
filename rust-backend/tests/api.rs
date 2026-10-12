@@ -3657,6 +3657,192 @@ async fn province_gallery_conflicts_roll_back_and_unpublish_detaches() {
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn settlement_reference_metadata_is_atomic_and_visible_to_public_reads() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let database = env.config.database_path.clone();
+
+    let created = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/settlements",
+        Some(&cookie),
+        Some(json!({
+            "name": "Метаданные",
+            "uyezdId": "uyezd-1897-2",
+            "coordinates": "22, 22",
+            "url": "/naselennyy-punkt/metadata",
+            "type": "Село"
+        })),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let settlement_id = created.body["id"].as_str().unwrap().to_string();
+
+    // Metadata alone is a valid save even before a reference row exists.
+    let metadata_only = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/metadata/reference",
+        Some(&cookie),
+        Some(json!({
+            "name": "Новые метаданные",
+            "coordinates": "31, 31",
+            "type": "Город"
+        })),
+    )
+    .await;
+    assert_eq!(metadata_only.status, StatusCode::OK);
+    assert_eq!(metadata_only.body["name"], "Новые метаданные");
+    assert_eq!(metadata_only.body["coordinates"], "31, 31");
+    assert_eq!(metadata_only.body["type"], "Город");
+    assert_eq!(metadata_only.body["body"], Value::Null);
+    assert_eq!(metadata_only.body["images"], json!([]));
+
+    let public = api(
+        &app,
+        Method::GET,
+        "/internal/settlement/metadata",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(public.body["settlement"]["latitude"].as_f64(), Some(31.0));
+    assert_eq!(
+        public.body["settlement"]["longitude"].as_f64(),
+        Some(31.0)
+    );
+    assert_eq!(public.body["settlement"]["type"], "Город");
+    let geo = api(&app, Method::GET, "/internal/geo", None, None).await;
+    let geo_settlement = geo.body["settlements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|settlement| settlement["id"] == settlement_id)
+        .expect("edited settlement in internal geo");
+    assert_eq!(geo_settlement["latitude"].as_f64(), Some(31.0));
+    assert_eq!(geo_settlement["longitude"].as_f64(), Some(31.0));
+    assert_eq!(geo_settlement["type"], "Город");
+
+    let original_body = paragraph_doc("Исходная справка");
+    let with_reference = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/metadata/reference",
+        Some(&cookie),
+        Some(json!({ "body": original_body })),
+    )
+    .await;
+    assert_eq!(with_reference.status, StatusCode::OK);
+
+    // A point in another district cannot silently move this settlement; the
+    // name, type and reference in the same request all roll back.
+    let outside_current_district = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/metadata/reference",
+        Some(&cookie),
+        Some(json!({
+            "name": "Не сохранить",
+            "coordinates": "1, 1",
+            "type": "Село",
+            "body": paragraph_doc("Не сохранить")
+        })),
+    )
+    .await;
+    assert_eq!(outside_current_district.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        outside_current_district.error_message(),
+        "Точка находится за пределами выбранного уезда."
+    );
+
+    // Removing a stored type from settings must not invalidate the unchanged
+    // historical value, and a metadata-only save preserves the reference.
+    let removed_type = api(
+        &app,
+        Method::DELETE,
+        "/api/nastroyki",
+        Some(&cookie),
+        Some(json!({ "kind": "settlementTypes", "name": "Город" })),
+    )
+    .await;
+    assert_eq!(removed_type.status, StatusCode::OK);
+    let historical = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/metadata/reference",
+        Some(&cookie),
+        Some(json!({ "coordinates": "22, 22", "type": "Город" })),
+    )
+    .await;
+    assert_eq!(historical.status, StatusCode::OK);
+    assert_eq!(historical.body["body"], original_body);
+
+    let invalid_type = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/metadata/reference",
+        Some(&cookie),
+        Some(json!({
+            "name": "Тоже не сохранить",
+            "type": "Деревня",
+            "body": paragraph_doc("Тоже не сохранить")
+        })),
+    )
+    .await;
+    assert_eq!(invalid_type.status, StatusCode::BAD_REQUEST);
+    let unchanged = api(
+        &app,
+        Method::GET,
+        "/internal/settlement/metadata",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(unchanged.body["settlement"]["name"], "Новые метаданные");
+    assert_eq!(
+        unchanged.body["settlement"]["latitude"].as_f64(),
+        Some(22.0)
+    );
+    assert_eq!(
+        unchanged.body["settlement"]["longitude"].as_f64(),
+        Some(22.0)
+    );
+    assert_eq!(unchanged.body["settlement"]["type"], "Город");
+    let reference = api(
+        &app,
+        Method::GET,
+        &format!("/internal/settlement-reference/{settlement_id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(reference.body["body"], original_body);
+
+    // A legacy NULL type stays NULL when metadata saves omit `type`.
+    let connection = dimasik_backend::db::open_database(&database).expect("database opens");
+    connection
+        .execute(
+            "UPDATE settlements SET type = NULL WHERE id = ?1",
+            rusqlite::params![settlement_id],
+        )
+        .expect("legacy null type");
+    drop(connection);
+    let legacy = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/metadata/reference",
+        Some(&cookie),
+        Some(json!({ "coordinates": "31, 31" })),
+    )
+    .await;
+    assert_eq!(legacy.status, StatusCode::OK);
+    assert_eq!(legacy.body["type"], Value::Null);
+    assert_eq!(legacy.body["body"], original_body);
+}
+
 /// The settlement reference PATCH gains the optional ordered gallery: an
 /// empty document is accepted while images remain, body-only saves keep the
 /// photos, a foreign id rolls everything back and the About editor stays

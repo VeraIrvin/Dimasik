@@ -487,18 +487,26 @@ pub async fn reference_patch(
 ) -> ApiResult<Response> {
     http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
     let payload = http::read_json_object(&headers, body, Some(MAX_POST_REQUEST_BYTES)).await?;
-    if !allowed_keys(&payload, &["name", "body", "imageIds"])
-        || (!payload.contains_key("name") && !payload.contains_key("body"))
+    if !allowed_keys(
+        &payload,
+        &["name", "body", "imageIds", "coordinates", "type"],
+    ) || (!payload.contains_key("name")
+        && !payload.contains_key("body")
+        && !payload.contains_key("coordinates")
+        && !payload.contains_key("type"))
         || (payload.contains_key("imageIds") && !payload.contains_key("body"))
     {
         return Err(ApiError::bad_request(
-            "Ожидается название или документ содержимого страницы.",
+            "Ожидаются метаданные или документ содержимого страницы.",
         ));
     }
     let name = payload.get("name").cloned();
     let document = payload.get("body").cloned();
     let image_ids = payload.get("imageIds").cloned();
-    let (name, body, images, detached) = state
+    let coordinates = payload.get("coordinates").cloned();
+    let type_name = payload.get("type").cloned();
+    let geo = state.geo.clone();
+    let saved = state
         .call(move |conn| {
             let Some(settlement_id) =
                 store::find_published_settlement_id_by_slug(conn, &slug)?
@@ -511,17 +519,28 @@ pub async fn reference_patch(
                 name.as_ref(),
                 document.as_ref(),
                 image_ids.as_ref(),
+                coordinates.as_ref(),
+                type_name.as_ref(),
+                |province_id, uyezd_id, longitude, latitude| {
+                    geo.is_point_in_uyezd(province_id, uyezd_id, longitude, latitude)
+                },
             )
         })
         .await?;
     // Images removed by this save are detached with their cleanup marker;
     // their storage objects are deleted by the background sweep.
-    if detached {
+    if saved.detached {
         spawn_image_sweep(&state);
     }
     Ok(http::json_response(
         StatusCode::OK,
-        json!({ "name": name, "body": body, "images": images_json(&images) }),
+        json!({
+            "name": saved.name,
+            "body": saved.body,
+            "images": images_json(&saved.images),
+            "coordinates": format!("{}, {}", saved.latitude, saved.longitude),
+            "type": saved.type_name,
+        }),
     ))
 }
 

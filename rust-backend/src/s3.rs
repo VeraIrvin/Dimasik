@@ -9,7 +9,7 @@
 //!
 //! Uploads are validated before anything is written to the bucket: only
 //! JPEG, PNG and WebP payloads that actually decode are accepted, capped at
-//! 10 MiB, 8192 pixels per side and 24 megapixels. SVG and every other
+//! 50 MiB, 8192 pixels per side and 24 megapixels. SVG and every other
 //! format are rejected. The original bytes are stored untouched; decoded
 //! pixels are rotated or flipped according to their EXIF orientation before
 //! thumbnailing, so the reported dimensions and the lossless WebP thumbnail
@@ -35,8 +35,8 @@ use ::s3::{Bucket, Region};
 use crate::config::Config;
 use crate::error::{ApiError, ApiResult};
 
-/// Hard cap for one uploaded file (10 MiB).
-pub const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
+/// Hard cap for one uploaded file (50 MiB).
+pub const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 /// Hard cap for either side of the decoded image.
 pub const MAX_IMAGE_DIMENSION: u32 = 8192;
 /// Hard cap for the decoded pixel count (24 megapixels).
@@ -916,9 +916,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_oversized_uploads() {
+    fn upload_size_boundary_accepts_exact_limit_and_rejects_one_byte_over() {
+        let mut at_limit = encoded_sample(ImageFormat::Png, 1, 1);
+        at_limit.resize(MAX_UPLOAD_BYTES, 0);
+        assert_eq!(at_limit.len(), MAX_UPLOAD_BYTES);
+        assert!(prepare_image(Bytes::from(at_limit)).is_ok());
+
+        let mut over_limit = encoded_sample(ImageFormat::Png, 1, 1);
+        over_limit.resize(MAX_UPLOAD_BYTES + 1, 0);
+        assert_eq!(over_limit.len(), MAX_UPLOAD_BYTES + 1);
         assert_eq!(
-            rejected(vec![0u8; MAX_UPLOAD_BYTES + 1]).status,
+            rejected(over_limit).status,
             StatusCode::BAD_REQUEST
         );
     }

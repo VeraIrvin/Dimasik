@@ -252,6 +252,12 @@
   z-index: 2;
 }
 
+/* The settlement list owns the left edge; keep its overview clear on the right. */
+.settlementView .extentPanel {
+  right: 60px;
+  left: auto;
+}
+
 .extentButton {
   display: grid;
   gap: 2px;
@@ -528,6 +534,16 @@
   cursor: default;
 }
 
+/*
+ * Before the phone layout tightens the switcher, stack the settlement overview
+ * above it so the two long controls cannot meet around tablet-width screens.
+ */
+@media (min-width: 561px) and (max-width: 720px) {
+  .settlementView .extentPanel {
+    bottom: 72px;
+  }
+}
+
 
 @media (max-width: 560px) {
   .shell {
@@ -573,6 +589,11 @@
     bottom: 84px;
   }
 
+  /* In settlement view the overview occupies this corner; keep the caption above it. */
+  .settlementView .periodCaption {
+    bottom: 116px;
+  }
+
   .periodCaption span {
     font-size: 9px;
   }
@@ -586,6 +607,11 @@
     right: auto;
     bottom: 62px;
     left: 10px;
+  }
+
+  .settlementView .extentPanel {
+    right: 56px;
+    left: auto;
   }
 
   .extentButton {

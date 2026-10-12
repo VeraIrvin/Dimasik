@@ -136,16 +136,22 @@ to 300 UTF-16 code units. Responses and both province and settlement public
 reads always serialize `author` as a string. `archiveReference` remains the
 storage/API key, while its user-visible and validation label is «Источник».
 
-`PATCH /api/naselennyy-punkt/{slug}/reference` accepts optional `name` and
-optional `body`; at least one is required, and `imageIds` is valid only with
-`body`. `{name}` performs a name-only save while preserving the current
-reference and gallery, including records that have no reference. A normal
-`{name, body, imageIds}` save renames and updates reference content atomically.
-The shared settlement-name validator trims the name and enforces 1–200 UTF-16
-code units. The response is `{name, body, images}`; `body` is `null` when no
-reference exists. The settlement id, URL, province, district, coordinates,
-type, creation time and order never change. Explicitly clearing all reference
-text and final images remains invalid.
+`PATCH /api/naselennyy-punkt/{slug}/reference` accepts optional `name`,
+`coordinates` (a `"latitude, longitude"` string), `type` (a string), `body`
+and ordered `imageIds`; at least one metadata field or `body` is required, and
+`imageIds` is valid only with `body`. All supplied metadata, reference content
+and gallery changes commit atomically. A metadata-only save preserves the
+current body and gallery and is valid even when the settlement has no reference.
+Changed coordinates must remain inside the settlement's current historical
+district. A changed type must be in the current settings; omitting `type`
+preserves an existing historical value or `null` (resubmitting the unchanged
+historical value is also accepted). The shared settlement-name validator trims
+the name and enforces 1–200 UTF-16 code units. The canonical response is
+`{name, coordinates, type, body, images}`: `coordinates` is the stored
+`"latitude, longitude"` string, `type` and `body` may be `null`, and `images`
+is the ordered gallery. The settlement id, URL, province, district, creation
+time and order never change. Explicitly clearing all reference text and final
+images remains invalid.
 
 Traffic reports use `GET /api/metrika/traffic?report=overview|daily|pages|sources|devices&period=today|7d|30d|custom`.
 Custom periods require inclusive ISO dates `from` and `to`; dates use Moscow time
@@ -174,9 +180,15 @@ for ten minutes by report/date range, with per-key single-flight and a bounded
 
 Image endpoints (all `Cache-Control: no-store` like the rest):
 
+The Next.js frontend must be deployed with this backend limit:
+`experimental.proxyClientMaxBodySize` is 50 MiB + 64 KiB for the multipart
+envelope, and `experimental.proxyTimeout` is three minutes so the external
+`/api/*` rewrite can complete a 50 MiB upload. Update frontend and backend
+together whenever these upload settings change.
+
 * `POST /api/post-images` — admin cookie plus the Origin/host guard;
-  `multipart/form-data` with exactly one `file` part, request cap 10 MiB + 64
-  KiB. The decoded image must be JPEG, PNG or WebP, at most 10 MiB, at most
+  `multipart/form-data` with exactly one `file` part, request cap 50 MiB + 64
+  KiB. The decoded image must be JPEG, PNG or WebP, at most 50 MiB, at most
   8192 px per side and at most 24 MP, otherwise the answer is 400. EXIF
   orientation is applied before the thumbnail is rendered, so `width`/`height`
   describe the oriented image and the thumbnail matches what the browser shows

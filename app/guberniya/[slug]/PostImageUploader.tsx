@@ -14,7 +14,7 @@ import styles from "./PostImageUploader.module.css";
 
 const UPLOAD_URL = "/api/post-images";
 const MAX_IMAGES = 10;
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_MEGABYTES = MAX_IMAGE_BYTES / (1024 * 1024);
 const FILE_INPUT_ACCEPT = "image/jpeg,image/png,image/webp";
 /** Static lookup tables: accepted mime types, plus an extension fallback. */

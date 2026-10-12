@@ -557,27 +557,42 @@ pub fn get_settlement_reference(
     Ok(Some((body, images)))
 }
 
-/// Atomically saves an optional settlement rename and/or reference block.
-/// A name-only save preserves the current body and gallery. Reference saves
-/// require `body`; `imageIds` cannot be supplied alone. Explicitly clearing
-/// both reference text and its final gallery remains invalid.
-///
-/// Returns the normalized current name, current optional body, saved images,
-/// and whether persisted images were detached.
-pub fn save_settlement_reference(
+/// Result of atomically saving settlement metadata and its optional reference.
+#[derive(Debug)]
+pub struct SavedSettlementReference {
+    pub name: String,
+    pub body: Option<Value>,
+    pub images: Vec<PostImageRow>,
+    pub detached: bool,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub type_name: Option<String>,
+}
+
+/// Atomically saves optional settlement metadata and/or its reference block.
+/// A metadata-only save preserves the current body and gallery. Reference
+/// saves require `body`; `imageIds` cannot be supplied alone. Explicitly
+/// clearing both reference text and its final gallery remains invalid.
+pub fn save_settlement_reference<F>(
     connection: &mut Connection,
     settlement_id: &str,
     name: Option<&Value>,
     value: Option<&Value>,
     image_ids: Option<&Value>,
-) -> ApiResult<(String, Option<Value>, Vec<PostImageRow>, bool)> {
+    coordinates: Option<&Value>,
+    type_name: Option<&Value>,
+    point_in_uyezd: F,
+) -> ApiResult<SavedSettlementReference>
+where
+    F: Fn(&str, &str, f64, f64) -> Result<bool, String>,
+{
     if !is_valid_settlement_id(settlement_id) {
         return Err(ApiError::internal(
             "Settlement reference storage received an invalid settlement id.",
         ));
     }
-    if name.is_none() && value.is_none() {
-        return Err(bad("Ожидается название или документ содержимого страницы."));
+    if name.is_none() && value.is_none() && coordinates.is_none() && type_name.is_none() {
+        return Err(bad("Ожидаются метаданные или документ содержимого страницы."));
     }
     if value.is_none() && image_ids.is_some() {
         return Err(bad("Изображения можно сохранить только вместе с документом содержимого страницы."));
@@ -585,16 +600,52 @@ pub fn save_settlement_reference(
     let name = name.map(validate_settlement_name).transpose()?;
     let body = value.map(validate_optional_post_body).transpose()?;
     let replacement = validate_optional_image_ids(image_ids)?;
+    let requested_coordinates = coordinates.map(parse_coordinates).transpose()?;
     let now_ms = now_unix() * 1_000;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let current_name: String = transaction
+    let (current_name, province_id, uyezd_id, current_latitude, current_longitude, current_type):
+        (String, String, String, f64, f64, Option<String>) = transaction
         .query_row(
-            "SELECT name FROM settlements WHERE id = ?1",
+            "SELECT name, province_id, uyezd_id, latitude, longitude, type\n\
+             FROM settlements WHERE id = ?1",
             params![settlement_id],
-            |row| row.get(0),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| ApiError::not_found("Населённый пункт не найден."))?;
+    let (latitude, longitude) = requested_coordinates.unwrap_or((current_latitude, current_longitude));
+    if coordinates.is_some()
+        && !point_in_uyezd(&province_id, &uyezd_id, longitude, latitude)
+            .map_err(ApiError::internal)?
+    {
+        return Err(bad("Точка находится за пределами выбранного уезда."));
+    }
+    let saved_type = match type_name {
+        None => current_type,
+        Some(requested)
+            if requested
+                .as_str()
+                .is_some_and(|requested| current_type.as_deref() == Some(requested)) =>
+        {
+            current_type
+        }
+        Some(requested) => {
+            let settings = load_settings_lists(&transaction)?;
+            Some(validate_settlement_type(
+                requested,
+                &settings.settlement_types,
+            )?)
+        }
+    };
     let current = load_owner_images(&transaction, ImageOwner::Settlement, settlement_id)?;
     let (images, detached) = if body.is_some() {
         match &replacement {
@@ -628,18 +679,21 @@ pub fn save_settlement_reference(
     } else {
         get_settlement_reference(&transaction, settlement_id)?.map(|(body, _)| body)
     };
-    let name_changed = name
-        .as_deref()
-        .is_some_and(|requested| requested != current_name.as_str());
     let saved_name = name.unwrap_or(current_name);
-    if name_changed {
-        transaction.execute(
-            "UPDATE settlements SET name = ?1 WHERE id = ?2",
-            params![saved_name, settlement_id],
-        )?;
-    }
+    transaction.execute(
+        "UPDATE settlements SET name = ?1, latitude = ?2, longitude = ?3, type = ?4 WHERE id = ?5",
+        params![saved_name, latitude, longitude, saved_type, settlement_id],
+    )?;
     transaction.commit()?;
-    Ok((saved_name, stored_body, images, detached))
+    Ok(SavedSettlementReference {
+        name: saved_name,
+        body: stored_body,
+        images,
+        detached,
+        latitude,
+        longitude,
+        type_name: saved_type,
+    })
 }
 
 pub fn remove_settlement_reference(
@@ -2630,6 +2684,15 @@ mod tests {
             .unwrap();
     }
 
+    fn test_point_in_uyezd(
+        _province_id: &str,
+        _uyezd_id: &str,
+        _longitude: f64,
+        _latitude: f64,
+    ) -> Result<bool, String> {
+        Ok(true)
+    }
+
     #[test]
     fn image_id_lists_are_bounded_and_unique() {
         assert_eq!(
@@ -3451,19 +3514,25 @@ mod tests {
             }]
         });
 
-        let (name, body, images, detached) = save_settlement_reference(
+        let saved = save_settlement_reference(
             &mut connection,
             "settlement-1",
             None,
             Some(&empty),
             Some(&json!(["img-ref"])),
+            None,
+            None,
+            test_point_in_uyezd,
         )
         .unwrap();
-        assert_eq!(name, "Село");
-        assert_eq!(body, Some(plain_text_to_document("")));
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].settlement_id.as_deref(), Some("settlement-1"));
-        assert!(!detached);
+        assert_eq!(saved.name, "Село");
+        assert_eq!(saved.body, Some(plain_text_to_document("")));
+        assert_eq!(saved.images.len(), 1);
+        assert_eq!(
+            saved.images[0].settlement_id.as_deref(),
+            Some("settlement-1")
+        );
+        assert!(!saved.detached);
         // The image-only block reads back as the canonical empty document.
         let (read_body, read_images) = get_settlement_reference(&connection, "settlement-1")
             .unwrap()
@@ -3472,12 +3541,20 @@ mod tests {
         assert_eq!(read_images.len(), 1);
 
         // A body-only save keeps the name and gallery and stores the text...
-        let (name, _, images, detached) =
-            save_settlement_reference(&mut connection, "settlement-1", None, Some(&text), None)
-                .unwrap();
-        assert_eq!(name, "Село");
-        assert_eq!(images.len(), 1);
-        assert!(!detached);
+        let saved = save_settlement_reference(
+            &mut connection,
+            "settlement-1",
+            None,
+            Some(&text),
+            None,
+            None,
+            None,
+            test_point_in_uyezd,
+        )
+        .unwrap();
+        assert_eq!(saved.name, "Село");
+        assert_eq!(saved.images.len(), 1);
+        assert!(!saved.detached);
         // ...so an empty document that would remove the last image is still
         // rejected as a whole: the detach rolls back with the body.
         let rejected = save_settlement_reference(
@@ -3486,6 +3563,9 @@ mod tests {
             Some(&json!("Несохранённое имя")),
             Some(&empty),
             Some(&json!([])),
+            None,
+            None,
+            test_point_in_uyezd,
         )
         .unwrap_err();
         assert_eq!(rejected.message, "Текст публикации не должен быть пустым.");
@@ -3505,16 +3585,19 @@ mod tests {
 
         // A body that keeps text may drop the gallery, and only then is the
         // row handed to the cleanup sweep.
-        let (_, _, images, detached) = save_settlement_reference(
+        let saved = save_settlement_reference(
             &mut connection,
             "settlement-1",
             None,
             Some(&text),
             Some(&json!([])),
+            None,
+            None,
+            test_point_in_uyezd,
         )
         .unwrap();
-        assert!(images.is_empty());
-        assert!(detached);
+        assert!(saved.images.is_empty());
+        assert!(saved.detached);
         let (_, empty_images) = get_settlement_reference(&connection, "settlement-1")
             .unwrap()
             .unwrap();
@@ -3526,24 +3609,30 @@ mod tests {
 
         // Name-only saves trim through the shared validator and preserve the
         // current reference. Invalid names cannot modify either field.
-        let (name, body, images, detached) = save_settlement_reference(
+        let saved = save_settlement_reference(
             &mut connection,
             "settlement-1",
             Some(&json!("  Новое Село  ")),
             None,
             None,
+            None,
+            None,
+            test_point_in_uyezd,
         )
         .unwrap();
-        assert_eq!(name, "Новое Село");
-        assert_eq!(body, Some(text.clone()));
-        assert!(images.is_empty());
-        assert!(!detached);
+        assert_eq!(saved.name, "Новое Село");
+        assert_eq!(saved.body, Some(text.clone()));
+        assert!(saved.images.is_empty());
+        assert!(!saved.detached);
         let invalid = save_settlement_reference(
             &mut connection,
             "settlement-1",
             Some(&json!(" ".repeat(MAX_SETTLEMENT_NAME_LENGTH + 1))),
             Some(&json!({ "type": "invalid" })),
             None,
+            None,
+            None,
+            test_point_in_uyezd,
         )
         .unwrap_err();
         assert_eq!(

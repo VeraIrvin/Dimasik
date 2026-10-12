@@ -28,6 +28,21 @@
   opacity: 0.6;
 }
 
+.metadataFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.metadataField {
+  display: grid;
+  gap: 6px;
+}
+
+.metadataField .nameInput {
+  margin-bottom: 7px;
+}
+
 .form {
   display: grid;
   gap: 8px;
@@ -112,6 +127,11 @@
 }
 
 @media (max-width: 640px) {
+  .metadataFields {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
   .actions {
     flex-direction: column;
   }
