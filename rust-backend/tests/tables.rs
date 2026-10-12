@@ -148,6 +148,63 @@ fn rich_table_doc(label: &str) -> Value {
     })
 }
 
+fn archival_register_doc(revision: &str) -> Value {
+    let cell = |node_type: &str, text: String| {
+        json!({
+            "type": node_type,
+            "attrs": {
+                "colspan": 1,
+                "rowspan": 1,
+                "colwidth": null,
+                "align": null
+            },
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": text }]
+            }]
+        })
+    };
+
+    let mut rows = vec![json!({
+        "type": "tableRow",
+        "content": [
+            cell("tableHeader", "Фонд".to_owned()),
+            cell("tableHeader", "Опись".to_owned()),
+            cell("tableHeader", "Дело".to_owned()),
+            cell("tableHeader", "Лист".to_owned())
+        ]
+    })];
+    rows.extend((1..190).map(|record| {
+        json!({
+            "type": "tableRow",
+            "content": [
+                cell("tableCell", format!("Ф. {}", 100 + record)),
+                cell("tableCell", format!("Оп. {record}")),
+                cell("tableCell", format!("Д. {}", 1_000 + record)),
+                cell("tableCell", format!("{revision}, л. {record}"))
+            ]
+        })
+    }));
+
+    json!({
+        "type": "doc",
+        "content": [{ "type": "table", "content": rows }]
+    })
+}
+
+fn assert_complete_archival_register(actual: &Value, expected: &Value) {
+    assert_eq!(actual, expected);
+    let rows = actual["content"][0]["content"]
+        .as_array()
+        .expect("archival register rows");
+    assert_eq!(rows.len(), 190);
+    assert!(rows.iter().all(|row| {
+        row["content"]
+            .as_array()
+            .is_some_and(|cells| cells.len() == 4)
+    }));
+}
+
 fn blank_table_doc() -> Value {
     json!({
         "type": "doc",
@@ -444,6 +501,88 @@ async fn table_post_create_edit_move_and_reopen_preserve_body_metadata_and_image
     assert_eq!(persisted["author"], "А. Н. Автор");
     assert_eq!(persisted["uyezdId"], "uyezd-1897-9");
     assert_eq!(persisted["images"][0]["id"], "img-table-post");
+}
+
+#[tokio::test]
+async fn archival_register_with_190_rows_survives_post_create_read_edit_and_reopen() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let initial_body = archival_register_doc("ред. 1");
+
+    let created = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/posts",
+        Some(&cookie),
+        Some(json!({
+            "title": "Архивный справочник",
+            "body": initial_body,
+            "category": "Очерк"
+        })),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    assert_complete_archival_register(&created.body["body"], &initial_body);
+    let post_id = created.body["id"].as_str().expect("post id").to_owned();
+
+    let published = api(
+        &app,
+        Method::GET,
+        "/internal/gubernia/ryazanskaya",
+        None,
+        None,
+    )
+    .await;
+    assert_complete_archival_register(
+        &find_post(&published.body, &post_id)["body"],
+        &initial_body,
+    );
+
+    let edited_body = archival_register_doc("ред. 2");
+    let edited = api(
+        &app,
+        Method::PATCH,
+        &format!("/api/gubernias/ryazan/posts/{post_id}"),
+        Some(&cookie),
+        Some(json!({
+            "title": "Архивный справочник",
+            "body": edited_body,
+            "category": "Очерк"
+        })),
+    )
+    .await;
+    assert_eq!(edited.status, StatusCode::OK);
+    assert_complete_archival_register(&edited.body["body"], &edited_body);
+
+    let published_after_edit = api(
+        &app,
+        Method::GET,
+        "/internal/gubernia/ryazanskaya",
+        None,
+        None,
+    )
+    .await;
+    assert_complete_archival_register(
+        &find_post(&published_after_edit.body, &post_id)["body"],
+        &edited_body,
+    );
+
+    env.prepare_again()
+        .expect("archival register database reopens");
+    let reopened = TestEnv::router_for_config(&env.config);
+    let persisted = api(
+        &reopened,
+        Method::GET,
+        "/internal/gubernia/ryazanskaya",
+        None,
+        None,
+    )
+    .await;
+    assert_complete_archival_register(
+        &find_post(&persisted.body, &post_id)["body"],
+        &edited_body,
+    );
 }
 
 #[tokio::test]

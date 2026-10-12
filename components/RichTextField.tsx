@@ -21,7 +21,7 @@ import { StarterKit } from "@tiptap/starter-kit";
 import type { PostDocument } from "@/lib/post-content";
 import styles from "./RichTextField.module.css";
 
-const MAX_TABLE_ROWS = 100;
+const MAX_TABLE_ROWS = 500;
 const MAX_TABLE_COLUMNS = 100;
 const DEFAULT_COLOR = "#272622";
 const ALIGNMENTS = ["left", "center", "right", "justify"] as const;

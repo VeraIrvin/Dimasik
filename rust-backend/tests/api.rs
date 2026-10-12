@@ -112,6 +112,36 @@ fn canonical_description() -> Value {
     document
 }
 
+fn formatted_clipboard_body() -> Value {
+    json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [
+                { "type": "text", "text": "л. 429 Села Черленого" },
+                { "type": "hardBreak", "marks": [
+                    { "type": "textStyle", "attrs": { "color": "rgb(0,0,0)" } }
+                ]},
+                { "type": "text", "text": "Алешка Ананин сын Татаринов 3 лет" },
+                { "type": "hardBreak", "marks": [
+                    { "type": "textStyle", "attrs": { "color": "" } }
+                ]},
+                { "type": "text", "text": "Кононка Ананин сын Татаринов 2 лет" }
+            ]
+        }]
+    })
+}
+
+fn canonical_formatted_clipboard_body() -> Value {
+    let mut document = formatted_clipboard_body();
+    document["content"][0]["content"][1]["marks"][0]["attrs"]["color"] = json!("#000000");
+    document["content"][0]["content"][3]
+        .as_object_mut()
+        .unwrap()
+        .remove("marks");
+    document
+}
+
 #[tokio::test]
 async fn bootstrap_preserves_fixture_state_and_legacy_shapes() {
     let env = TestEnv::new();
@@ -803,6 +833,76 @@ async fn province_description_rejects_unsafe_and_oversized_documents() {
     .await;
     assert_eq!(cleared_with_null.status, StatusCode::OK);
     assert_eq!(cleared_with_null.body["description"], Value::Null);
+}
+
+#[tokio::test]
+async fn posts_accept_and_persist_marked_hard_breaks_from_formatted_clipboard_text() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let expected = canonical_formatted_clipboard_body();
+
+    let created = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/posts",
+        Some(&cookie),
+        Some(json!({
+            "title": "Буфер обмена",
+            "body": formatted_clipboard_body(),
+            "category": "Статья"
+        })),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    assert_eq!(created.body["body"], expected);
+    let post_id = created.body["id"].as_str().unwrap().to_string();
+
+    let edited = api(
+        &app,
+        Method::PATCH,
+        &format!("/api/gubernias/ryazan/posts/{post_id}"),
+        Some(&cookie),
+        Some(json!({
+            "title": "Буфер обмена — сохранено",
+            "body": formatted_clipboard_body(),
+            "category": "Статья"
+        })),
+    )
+    .await;
+    assert_eq!(edited.status, StatusCode::OK);
+    assert_eq!(edited.body["body"], expected);
+
+    let mut unsafe_body = formatted_clipboard_body();
+    unsafe_body["content"][0]["content"][1]["marks"] =
+        json!([{ "type": "link", "attrs": { "href": "javascript:alert(1)" } }]);
+    let rejected = api(
+        &app,
+        Method::PATCH,
+        &format!("/api/gubernias/ryazan/posts/{post_id}"),
+        Some(&cookie),
+        Some(json!({
+            "title": "Не сохранять",
+            "body": unsafe_body,
+            "category": "Статья"
+        })),
+    )
+    .await;
+    assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        rejected.error_message(),
+        "Некорректное содержимое публикации."
+    );
+
+    let gubernia = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    let stored = gubernia.body["posts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|post| post["id"] == post_id)
+        .expect("created post is visible");
+    assert_eq!(stored["title"], "Буфер обмена — сохранено");
+    assert_eq!(stored["body"], expected);
 }
 
 #[tokio::test]

@@ -9,7 +9,7 @@ const MAX_DOCUMENT_NODES: usize = 5_000;
 const MAX_DOCUMENT_TEXT: usize = 100_000;
 const MAX_LINK_HREF_LENGTH: usize = 2_048;
 const MAX_LINK_TITLE_LENGTH: usize = 512;
-const MAX_TABLE_ROWS: usize = 100;
+const MAX_TABLE_ROWS: usize = 500;
 const MAX_TABLE_COLUMNS: usize = 100;
 const MAX_TABLE_COLUMN_WIDTH: usize = 10_000;
 
@@ -106,7 +106,7 @@ fn node_keys(node_type: &str) -> Option<&'static [&'static str]> {
         "table" | "tableRow" => &["type", "content"],
         "tableCell" | "tableHeader" => &["type", "attrs", "content"],
         "text" => &["type", "text", "marks"],
-        "hardBreak" => &["type"],
+        "hardBreak" => &["type", "marks"],
         _ => return None,
     })
 }
@@ -633,8 +633,12 @@ fn normalize_node(
             Ok(Value::Object(out))
         }
         "hardBreak" => {
+            let marks = normalize_marks(node.get("marks"))?;
             let mut out = Map::new();
             out.insert("type".to_string(), Value::String("hardBreak".to_string()));
+            if let Some(marks) = marks {
+                out.insert("marks".to_string(), marks);
+            }
             Ok(Value::Object(out))
         }
         "paragraph" => {
@@ -963,7 +967,7 @@ mod tests {
             json!(null), json!({ "style": "color:red" }), json!({ "textAlign": "center" }),
             json!({ "colspan": null }), json!({ "colspan": 0 }), json!({ "colspan": 101 }),
             json!({ "colspan": 1.5 }), json!({ "colspan": "1" }), json!({ "colspan": true }),
-            json!({ "rowspan": null }), json!({ "rowspan": -1 }), json!({ "rowspan": 101 }),
+            json!({ "rowspan": null }), json!({ "rowspan": -1 }), json!({ "rowspan": 501 }),
             json!({ "rowspan": 1.5 }), json!({ "rowspan": "1" }), json!({ "rowspan": false }),
             json!({ "colwidth": [] }), json!({ "colwidth": [1, 2] }), json!({ "colwidth": "2" }),
             json!({ "colwidth": [null] }), json!({ "colwidth": [-1] }),
@@ -1023,15 +1027,41 @@ mod tests {
             table_document(vec![vec![plain(), span(1, 2)], vec![span(2, 1)]]),
             table_document(vec![vec![span(100, 1), plain()]]),
             table_document(vec![vec![plain(); 101]]),
-            table_document(vec![vec![plain()]; 101]),
+            table_document(vec![vec![plain()]; 501]),
         ] {
             assert_eq!(normalize_post_document(&document).unwrap_err().0, INVALID_DOCUMENT_MESSAGE, "{document}");
         }
-        // Maximum dimensions are possible without materialising a 100×100 map.
-        let mut rows = vec![vec![span(100, 100)]];
-        rows.extend(vec![vec![]; 99]);
-        let normalized = normalize_post_document(&table_document(rows)).unwrap();
-        assert_eq!(normalized["content"][0]["content"].as_array().unwrap().len(), 100);
+
+        let maximum_width = normalize_post_document(&table_document(vec![vec![span(100, 1)]]))
+            .unwrap();
+        assert_eq!(
+            maximum_width["content"][0]["content"][0]["content"][0]["attrs"]["colspan"],
+            100,
+        );
+
+        let maximum_rows =
+            normalize_post_document(&table_document(vec![vec![plain()]; 500])).unwrap();
+        assert_eq!(
+            maximum_rows["content"][0]["content"].as_array().unwrap().len(),
+            500,
+        );
+
+        // Maximum rowspan is validated with bounded rolling occupancy rather
+        // than materialising a width × height map.
+        let mut rows = vec![vec![span(1, 500)]];
+        rows.extend(vec![vec![]; 499]);
+        let maximum_rowspan = normalize_post_document(&table_document(rows)).unwrap();
+        assert_eq!(
+            maximum_rowspan["content"][0]["content"][0]["content"][0]["attrs"]["rowspan"],
+            500,
+        );
+
+        let mut rows = vec![vec![span(1, 501)]];
+        rows.extend(vec![vec![]; 499]);
+        assert_eq!(
+            normalize_post_document(&table_document(rows)).unwrap_err().0,
+            INVALID_DOCUMENT_MESSAGE,
+        );
     }
 
     #[test]
@@ -1280,6 +1310,47 @@ mod tests {
         });
         let normalized = normalize_post_document(&dropped).unwrap();
         assert!(normalized["content"][0]["content"][0].get("marks").is_none());
+    }
+
+    #[test]
+    fn hard_break_marks_use_the_text_mark_contract() {
+        let document = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    { "type": "text", "text": "л. 429 Села Черленого" },
+                    { "type": "hardBreak", "marks": [
+                        { "type": "textStyle", "attrs": { "color": "rgb(0,0,0)" } }
+                    ]},
+                    { "type": "text", "text": "Алешка Ананин сын Татаринов 3 лет" },
+                    { "type": "hardBreak", "marks": [
+                        { "type": "textStyle", "attrs": { "color": "" } }
+                    ]},
+                    { "type": "text", "text": "Кононка Ананин сын Татаринов 2 лет" }
+                ]
+            }]
+        });
+        let normalized = normalize_post_document(&document).unwrap();
+        let content = normalized["content"][0]["content"].as_array().unwrap();
+        assert_eq!(
+            content[1]["marks"],
+            json!([{ "type": "textStyle", "attrs": { "color": "#000000" } }])
+        );
+        assert!(content[3].get("marks").is_none());
+        assert_eq!(normalize_post_document(&normalized).unwrap(), normalized);
+
+        for unsafe_mark in [
+            json!({ "type": "unknown" }),
+            json!({ "type": "link", "attrs": { "href": "javascript:alert(1)" } }),
+        ] {
+            let mut unsafe_document = document.clone();
+            unsafe_document["content"][0]["content"][1]["marks"] = json!([unsafe_mark]);
+            assert_eq!(
+                normalize_post_document(&unsafe_document).unwrap_err().0,
+                INVALID_DOCUMENT_MESSAGE
+            );
+        }
     }
 
     #[test]

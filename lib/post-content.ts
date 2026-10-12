@@ -4,7 +4,7 @@ const MAX_DOCUMENT_NODES = 5_000;
 const MAX_DOCUMENT_TEXT = 100_000;
 const MAX_LINK_HREF_LENGTH = 2_048;
 const MAX_LINK_TITLE_LENGTH = 512;
-const MAX_TABLE_ROWS = 100;
+const MAX_TABLE_ROWS = 500;
 const MAX_TABLE_COLUMNS = 100;
 const MAX_TABLE_COLUMN_WIDTH = 10_000;
 
@@ -47,7 +47,7 @@ const NODE_KEYS: Record<string, Record<string, true>> = {
   tableCell: { type: true, attrs: true, content: true },
   tableHeader: { type: true, attrs: true, content: true },
   text: { type: true, text: true, marks: true },
-  hardBreak: { type: true },
+  hardBreak: { type: true, marks: true },
   alignmentAttrs: { textAlign: true },
   headingAttrs: { level: true, textAlign: true },
   orderedListAttrs: { start: true },
@@ -371,8 +371,10 @@ function normalizeNode(
       const marks = normalizeMarks(node.marks);
       return { type: "text", text: node.text, ...(marks === undefined ? {} : { marks }) };
     }
-    case "hardBreak":
-      return { type: "hardBreak" };
+    case "hardBreak": {
+      const marks = normalizeMarks(node.marks);
+      return { type: "hardBreak", ...(marks === undefined ? {} : { marks }) };
+    }
     case "paragraph": {
       const attrs = normalizeAlignmentAttrs(node.attrs);
       const content = normalizeInlineContent(node.content, depth, context);

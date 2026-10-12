@@ -17,7 +17,10 @@ function forumClipboardDocument() {
       text: `у него сын Андрей ${index + 1}`,
       marks: [{ type: "textStyle", attrs: { color: "rgb(0, 0, 0)" } }],
     },
-    { type: "hardBreak" },
+    {
+      type: "hardBreak",
+      marks: [{ type: "textStyle", attrs: { color: "rgb(0, 0, 0)" } }],
+    },
   ]).flat();
 
   return {
@@ -50,6 +53,7 @@ test("forum clipboard text retains line breaks and safe formatting", () => {
   assert.equal(content.filter((node) => node.type === "hardBreak").length, 411);
   assert.deepEqual(content[0].marks, [{ type: "underline" }, { type: "bold" }]);
   assert.deepEqual(content[1].marks, [{ type: "textStyle", attrs: { color: "#000000" } }]);
+  assert.deepEqual(content[2].marks, [{ type: "textStyle", attrs: { color: "#000000" } }]);
   assert.deepEqual(content.at(-1).marks, [
     { type: "bold" },
     { type: "textStyle", attrs: { color: "#9c0000" } },
@@ -57,35 +61,44 @@ test("forum clipboard text retains line breaks and safe formatting", () => {
   assert.equal(content[1].text, "у него сын Андрей 1");
 });
 
-test("unset pasted color does not discard other formatting", () => {
+test("empty pasted color is dropped from text and hard breaks without discarding other formatting", () => {
   const normalized = normalizePostDocument({
     type: "doc",
     content: [{
       type: "paragraph",
-      content: [{
-        type: "text",
-        text: "фрагмент",
-        marks: [{ type: "textStyle", attrs: { color: "" } }, { type: "bold" }],
-      }],
+      content: [
+        {
+          type: "text",
+          text: "фрагмент",
+          marks: [{ type: "textStyle", attrs: { color: "" } }, { type: "bold" }],
+        },
+        {
+          type: "hardBreak",
+          marks: [{ type: "textStyle", attrs: { color: "" } }, { type: "bold" }],
+        },
+      ],
     }],
   });
 
   assert.deepEqual(normalized.content[0].content[0].marks, [{ type: "bold" }]);
+  assert.deepEqual(normalized.content[0].content[1].marks, [{ type: "bold" }]);
 });
 
-test("pasted CSS cannot inject arbitrary styles", () => {
+test("pasted CSS cannot inject arbitrary styles through hard breaks", () => {
   const unsafe = {
     type: "doc",
     content: [{
       type: "paragraph",
-      content: [{
-        type: "text",
-        text: "фрагмент",
-        marks: [{
-          type: "textStyle",
-          attrs: { color: "rgb(0,0,0);background:url(javascript:alert(1))" },
-        }],
-      }],
+      content: [
+        { type: "text", text: "фрагмент" },
+        {
+          type: "hardBreak",
+          marks: [{
+            type: "textStyle",
+            attrs: { color: "rgb(0,0,0);background:url(javascript:alert(1))" },
+          }],
+        },
+      ],
     }],
   };
 
@@ -317,6 +330,27 @@ test("real TipTap header grid defaults normalize without mutating editor JSON", 
   );
 });
 
+test("a 190 by 4 pasted table preserves every cell and normalizes idempotently", () => {
+  const document = tableDocument(Array.from({ length: 190 }, (_, row) =>
+    Array.from({ length: 4 }, (_, column) =>
+      tableCell(`row ${row}, column ${column}`, { ...DEFAULT_CELL_ATTRS }, row === 0 ? "tableHeader" : "tableCell")),
+  ));
+  const normalized = normalizePostDocument(document);
+  const rows = normalized.content[0].content;
+
+  assert.equal(rows.length, 190);
+  for (let row = 0; row < 190; row += 1) {
+    assert.equal(rows[row].content.length, 4);
+    for (let column = 0; column < 4; column += 1) {
+      const cell = rows[row].content[column];
+      assert.equal(cell.type, row === 0 ? "tableHeader" : "tableCell");
+      assert.deepEqual(cell.attrs, DEFAULT_CELL_ATTRS);
+      assert.equal(cell.content[0].content[0].text, `row ${row}, column ${column}`);
+    }
+  }
+  assert.deepEqual(normalizePostDocument(normalized), normalized);
+});
+
 test("table cells preserve spans, unsized widths, safe alignment and rich block formatting", () => {
   const header = tableCell("", { colspan: 2, rowspan: 2, colwidth: [180, 0], align: "center" }, "tableHeader");
   header.content = [
@@ -394,7 +428,7 @@ test("table cell attributes reject arbitrary styles, unsafe values and incompati
   const invalidAttrs = [
     null, [], { style: "background:url(javascript:alert(1))" }, { class: "injected" },
     { onclick: "alert(1)" }, { textAlign: "center" }, { background: "#fff" },
-    ...[0, -1, 1.5, 101, Number.MAX_SAFE_INTEGER, "2", null].flatMap((value) => [
+    ...[0, -1, 1.5, Number.MAX_SAFE_INTEGER, "2", null].flatMap((value) => [
       { colspan: value }, { rowspan: value },
     ]),
     { colwidth: [] }, { colwidth: [10, 20] }, { colwidth: [null] },
@@ -417,7 +451,7 @@ test("table cell attributes reject arbitrary styles, unsafe values and incompati
   }
 });
 
-test("table geometry rejects empty, ragged, overlapping, out-of-row and oversized grids", () => {
+test("table geometry rejects empty, ragged, overlapping and out-of-row grids", () => {
   const cases = [
     [], [[]],
     [[tableCell("x"), tableCell()], [tableCell()]],
@@ -425,22 +459,49 @@ test("table geometry rejects empty, ragged, overlapping, out-of-row and oversize
     [[tableCell("x", { rowspan: 2 })]],
     [[tableCell("x"), tableCell("", { rowspan: 2 }), tableCell()], [tableCell("", { colspan: 2 })]],
     [[tableCell("x"), tableCell("", { rowspan: 2 })], []],
-    [[tableCell("x", { colspan: 100 }), tableCell()]],
-    [Array.from({ length: 101 }, () => tableCell("x"))],
-    Array.from({ length: 101 }, () => [tableCell("x")]),
   ];
   for (const rows of cases) {
     assert.throws(() => normalizePostDocument(tableDocument(rows)), PostContentValidationError);
   }
 });
 
-test("bounded table edges and nesting still enforce the existing document resource caps", () => {
-  const wide = normalizePostDocument(tableDocument([[tableCell("x", { colspan: 100, colwidth: Array(100).fill(0) })]]));
+test("table row, row span and column boundaries remain independent", () => {
+  const hundredColumns = Array.from({ length: 100 }, (_, column) => tableCell(column === 0 ? "x" : ""));
+  assert.equal(normalizePostDocument(tableDocument([hundredColumns])).content[0].content[0].content.length, 100);
+  assert.throws(
+    () => normalizePostDocument(tableDocument([[...hundredColumns, tableCell()]])),
+    PostContentValidationError,
+  );
+
+  const wide = normalizePostDocument(tableDocument([[
+    tableCell("x", { colspan: 100, colwidth: Array(100).fill(0) }),
+  ]]));
   assert.equal(wide.content[0].content[0].content[0].attrs.colspan, 100);
+  assert.throws(
+    () => normalizePostDocument(tableDocument([[tableCell("x", { colspan: 101 })]])),
+    PostContentValidationError,
+  );
+
+  const fiveHundredRows = Array.from({ length: 500 }, (_, row) => [tableCell(row === 0 ? "x" : "")]);
+  assert.equal(normalizePostDocument(tableDocument(fiveHundredRows)).content[0].content.length, 500);
+  assert.throws(
+    () => normalizePostDocument(tableDocument([...fiveHundredRows, [tableCell()]])),
+    PostContentValidationError,
+  );
+
   const tall = normalizePostDocument(tableDocument([
-    [tableCell("x", { rowspan: 100 })], ...Array.from({ length: 99 }, () => []),
+    [tableCell("x", { rowspan: 500 })], ...Array.from({ length: 499 }, () => []),
   ]));
-  assert.equal(tall.content[0].content.length, 100);
+  assert.equal(tall.content[0].content[0].content[0].attrs.rowspan, 500);
+  assert.throws(
+    () => normalizePostDocument(tableDocument([
+      [tableCell("x", { rowspan: 501 })], ...Array.from({ length: 499 }, () => []),
+    ])),
+    PostContentValidationError,
+  );
+});
+
+test("table nesting still enforces the existing document resource caps", () => {
 
   function nestedTables(count) {
     let block = { type: "paragraph", content: [{ type: "text", text: "x" }] };

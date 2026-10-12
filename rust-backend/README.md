@@ -240,10 +240,17 @@ with an empty body answers 400 with
 last image. Because image validation and claims occur in the same transaction,
 a forged or unusable id cannot authorise an image-only record.
 
+The inline-node whitelist permits `marks` on both `text` and `hardBreak`
+nodes. Both use the same mark validation and canonicalisation: only `bold`,
+`italic`, `strike`, `underline`, `textStyle` and safe HTTP(S)/root-relative
+`link` marks survive. RGB `textStyle` colors are stored as lowercase hex, and
+an empty color removes that mark; unknown or unsafe marks still reject the
+whole document.
+
 ### Rich-document tables
 
 The shared validator accepts tables in posts, province descriptions, settlement
-references and About content. A `table` contains 1–100 `tableRow` nodes; each row
+references and About content. A `table` contains 1–500 `tableRow` nodes; each row
 contains `tableCell` or `tableHeader` nodes. Tables and rows accept only `type`
 and `content`. A cell/header accepts only `type`, `attrs` and `content`, and its
 non-empty content is a block array (an empty paragraph is valid). Existing block
@@ -256,8 +263,8 @@ Cell attributes are canonicalised to all four keys:
 ```
 
 Only these attributes are allowed. Missing spans default to 1; explicit spans
-must be integral numbers in 1–100. Missing/null widths and alignment become
-`null`. A `colwidth` array must have exactly `colspan` entries, each an integer
+must be integral numbers: `colspan` in 1–100 and `rowspan` in 1–500.
+Missing/null widths and alignment become `null`. A `colwidth` array must have exactly `colspan` entries, each an integer
 in 0–10,000; zero preserves an unsized column. Alignment is limited to `left`,
 `center` or `right`. Valid non-default widths and spans survive save/read/import.
 Explicit paragraph/heading `textAlign` values, including `left`, are preserved:
