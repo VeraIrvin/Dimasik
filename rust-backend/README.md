@@ -111,6 +111,8 @@ Browser API (same paths, methods, statuses and error envelopes
 | GET | `/api/posts/search?q={query}&offset={offset}` |
 | POST | `/api/gubernias` |
 | PATCH, DELETE | `/api/gubernias/{id}` |
+| PATCH | `/api/gubernias/{guberniaId}/districts/{districtId}` |
+| GET | `/api/gubernias/{id}/districts` |
 | POST | `/api/gubernias/{id}/posts` |
 | PATCH, DELETE | `/api/gubernias/{id}/posts/{postId}` |
 | POST | `/api/post-images` |
@@ -137,11 +139,13 @@ The search covers the title and all visible rich-body text, including formatted
 inline fragments and table cells, but not document attributes or post metadata.
 It streams the existing post rows in stable order and parses bodies as needed;
 there is no search index or schema migration. Only posts in published provinces
-are considered, including when the caller has an administrator session, so the
-route never reveals hidden province content. Each `href` ends in the post's
-`#post-{id}` anchor and points to the settlement's stored (or derived) URL when
-the post currently belongs there, otherwise to its province URL. Like every
-browser API response above, search uses `Cache-Control: no-store`.
+are considered, including for administrator sessions, so the route never
+reveals hidden province content. Each `href` ends in the post's `#post-{id}`
+anchor. Its canonical destination uses the current settlement URL first, then
+the effective district URL for a district-only post, and finally the province
+URL. The frontend allowlist accepts the district route; highlighting still
+expires after 12 seconds. Like every browser API response above, search uses
+`Cache-Control: no-store`.
 
 Every mutating route except `POST /api/admin/session` (login only checks
 credentials and sets the cookie) and `DELETE /api/admin/session` (which clears
@@ -172,6 +176,44 @@ the name and enforces 1–200 UTF-16 code units. The canonical response is
 is the ordered gallery. The settlement id, URL, province, district, creation
 time and order never change. Explicitly clearing all reference text and final
 images remains invalid.
+
+`PATCH /api/gubernias/{guberniaId}/districts/{districtId}` requires
+`{name, url, description, imageIds?}` and returns status 200 with the complete
+flat `PublishedDistrict` DTO. `name` is required, trimmed using JavaScript
+whitespace rules, and must contain 1–200 UTF-16 code units after trimming.
+Duplicate display names are allowed; stable IDs determine ownership. A nullable
+SQLite override stores the display name; saving the canonical name stores NULL.
+`url` is required and must be a full relative `/uezd/<slug>` path;
+`description` is a rich document or `null`, and omitting `imageIds` preserves
+the ordered gallery. The effective default is `/uezd/{districtId}`. Effective
+URLs are unique across every district, including defaults reserved by districts
+under unpublished provinces; replacing an override makes the old path return
+404 without a redirect. The operation cannot change the canonical historical
+registry ID/name, parent province, geometry, or post/settlement ownership. It
+requires a published parent and has the same administrator-cookie, Origin and
+body-validation protections as other mutations. There are no district create,
+delete or publication endpoints.
+
+`GET /api/gubernias/{id}/districts` returns
+`{districts: DistrictOption[]}`, with flat `{id, name, guberniaId, url}` entries
+in canonical registry order using effective display names and URLs. Unknown or
+unpublished parents return 404 even for administrator sessions; responses use
+`Cache-Control: no-store`. This lightweight catalogue endpoint does not load
+province posts. The frontend uses current server-supplied catalogue metadata for
+creation and existing-post editors in the current province, and this endpoint
+for another selected province, not static GeoJSON names. Refreshing catalogue
+choices after a rename preserves already-open draft fields.
+
+Migration 8 adds the nullable district display-name override without replacing
+canonical registry rows or existing editorial data. `serve` applies missing
+migrations at startup; deploy frontend and backend together because the PATCH
+name field is now required. Overrides are database state and belong in the
+SQLite backup, not edits to `PUBLIC_DATA_DIR`. Keep the existing coordinated
+SQLite/S3 backup procedure for galleries. Withdrawing the parent province
+transactionally clears district name and URL overrides and descriptions and
+detaches gallery images for cleanup, while retaining the historical catalogue.
+Republishing restores canonical names and default URLs with empty editorial
+content.
 
 Traffic reports use `GET /api/metrika/traffic?report=overview|daily|pages|sources|devices&period=today|7d|30d|custom`.
 Custom periods require inclusive ISO dates `from` and `to`; dates use Moscow time
@@ -231,9 +273,11 @@ together whenever these upload settings change.
 * `GET /api/post-images/{id}/original` and `.../thumbnail` — 302 with a
   `Location` header pointing at a SigV4 signed URL that expires after 600
   seconds. Pending uploads require the admin cookie and are only reachable
-  while fresh (24 h TTL); attached images are public only while their province
-  is published. Unknown, expired, cancelled, in-flight or otherwise hidden ids
-  answer 404, and storage keys are never accepted from query parameters.
+  while fresh (24 h TTL); attached images are public only while the parent
+  province of their post, province reference, settlement reference or district
+  reference is published. Unknown, expired, cancelled, in-flight or otherwise
+  hidden ids answer 404, and storage keys are never accepted from query
+  parameters.
 * `DELETE /api/post-images/{id}` — admin plus Origin guard; completed pending
   uploads only (an attached image answers 409, a provisional in-flight row,
   a row already fenced for cleanup or an unknown id answers 404, and without
@@ -326,11 +370,27 @@ cookie for session-aware reads, but public reads do not require one):
 | GET | `/internal/session` | `{isAdmin}` |
 | GET | `/internal/geo` | `{provinces, settlements}` |
 | GET | `/internal/gubernia/{slug}` | `PublishedGubernia` or 404 |
+| GET | `/internal/district/{slug}` | flat `PublishedDistrict` or 404 |
 | GET | `/internal/settlement/{slug}` | `{settlement, gubernia}` or 404 |
 | GET | `/internal/settlement-reference/{id}` | `{body, images}` for a published settlement; 404 when none is stored or the settlement is withdrawn (an admin cookie may read withdrawn rows) |
 | GET | `/internal/about` | `{body}` |
 | GET | `/internal/settings` | `{categories, settlementTypes}` |
 | GET | `/internal/metrics` | Public `PublicationMetrics` for `/o-proekte`; no administrator cookie required |
+
+`PublishedGubernia` includes required `districts`, ordered as the canonical
+registry, with flat `{id, name, guberniaId, url}` entries using each district's
+effective display name and URL. `PublishedDistrict` is
+`{id, name, guberniaId, url, description, images, gubernia, posts, settlements}`;
+its `name` is the effective display name, and its `gubernia.districts` contains
+the full parent district catalogue metadata with the same `DistrictOption[]`
+shape, not other districts' posts or settlements. It is public only under a
+published parent and includes only matching settlements plus district-wide and
+settlement-linked posts; legacy posts with no `uyezd_id` use the linked
+settlement's district. `/internal/geo` deliberately remains
+`{provinces, settlements}` and has no global districts array. Static historical
+GeoJSON remains authoritative for geometry and canonical registry identity,
+not the current display names used in page navigation, map labels/lists, post
+metadata, settlement district fields, filters and editor choices.
 
 `/internal/metrics` is the sole portal-content aggregate. It returns the canonical
 historical province total, the number of published provinces, totals of posts and
@@ -348,30 +408,38 @@ mutation authorization.
   `public/data/gubernias.geojson`; historical district shapes are read lazily
   from `public/data/uyezds-1897/<province>.geojson` for validation.
 * `provinces`, `districts`, `posts`, `settlements`, `settlement_references`,
-  `site_settings` and `about_content` hold all mutable state. Migrations live in
-  `migrations/` and are applied through `schema_migrations`.
-* `districts` mirrors the `id`/`name`/`provinceId` triples of the district
-  files; geometry stays in the GeoJSON files. Settlement and post writes may
-  only use an existing `(province, district)` pair, checked inside the write
-  transaction, and the registry is backfilled once (only while empty) for
-  databases imported before migration 2.
+  `site_settings`, `about_content` and `post_images` hold mutable state.
+  Migrations live in `migrations/`, are applied through `schema_migrations`,
+  and currently run through migration 7.
+* `districts` mirrors the 703 canonical `id`/`name`/`provinceId` triples of the
+  district files; geometry stays in GeoJSON. Every row is automatically
+  addressable at its effective URL under a published parent, with nullable
+  editorial URL and rich-reference fields rather than a separate publication
+  or user-created registry. Settlement and post writes may only use an existing
+  `(province, district)` pair, checked inside the write transaction; older
+  databases are backfilled from the canonical files.
 * Post order is a stored per-province `position`; new posts prepend, moved posts
   insert before older `createdAt` values but after equal ones, matching the
   previous array semantics.
-* Deleting a settlement detaches its posts (`settlementId: null`) and best-effort
-  removes its reference block; unpublishing a province removes its posts and
-  settlements while orphaned reference blocks survive, exactly like the JSON
-  stores.
+* Deleting a settlement detaches its posts (`settlementId: null`) and
+  best-effort removes its reference block. Withdrawing a province removes its
+  posts and settlements and transactionally clears every child district's URL
+  override and reference while detaching district-gallery images for the normal
+  cleanup lifecycle. The canonical district catalogue remains, so republishing
+  exposes empty pages at their default URLs; orphaned settlement reference
+  behavior is otherwise unchanged.
 * `post_images` (migration 4) stores one row per uploaded image: both object
   keys, the oriented `width`/`height`, the 0-based `position` and lifecycle
-  timestamps. It is the only owner of the storage key strings — URLs are never
+  timestamps. It is the only owner of storage key strings — URLs are never
   re-parsed into keys. Objects live under `post-images/{id}/original` and
   `post-images/{id}/thumbnail`, where `id` is the same server-generated row id;
   the thumbnail is a bounded WebP (max side 480 px, never upscaled, rendered
-  from EXIF-oriented pixels so it needs no further rotation) and the original
-  keeps its uploaded bytes, EXIF metadata and detected JPEG/PNG/WebP content
-  type. Migration 4 adds the table without backfilling, so every post created
-  before it simply has no image rows and serializes an empty `images` array.
+  from EXIF-oriented pixels), while the original retains its uploaded bytes,
+  EXIF metadata and detected JPEG/PNG/WebP content type. Migration 5 extends
+  ownership from posts to province and settlement references; migration 7 adds
+  `district_id` and enforces exactly one of the four attached owners. Claim,
+  ordered replacement, access guards, detachment and cleanup all use that same
+  four-owner invariant. Existing pre-image content has an empty `images` array.
 * Migration 6 adds `posts.author TEXT NOT NULL DEFAULT ''`; existing rows gain
   the empty author without changing any other publication field.
 * `POST /api/post-images` first writes a **provisional** row

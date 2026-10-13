@@ -1,0 +1,177 @@
+.panel {
+  max-width: 800px;
+  margin-top: 24px;
+  margin-bottom: 26px;
+  padding-bottom: 26px;
+  border-bottom: 1px solid var(--line, #dad7cf);
+}
+
+.form {
+  display: grid;
+  gap: 8px;
+  max-width: 560px;
+}
+
+.form label,
+.descriptionLabel {
+  color: #55514a;
+  font-size: 12px;
+}
+
+.context {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.context div {
+  display: grid;
+  grid-template-columns: minmax(100px, 140px) 1fr;
+  gap: 12px;
+}
+
+.context dt {
+  color: #777168;
+  font-size: 12px;
+}
+
+.context dd {
+  margin: 0;
+  font-size: 14px;
+}
+
+.addressField {
+  display: flex;
+  align-items: stretch;
+}
+
+.addressPrefix {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #c9c7c0;
+  border-right: 0;
+  border-radius: 3px 0 0 3px;
+  background: #f3efe6;
+  color: #55514a;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.textInput,
+.addressInput {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #c9c7c0;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+}
+
+.textInput {
+  width: 100%;
+  border-radius: 3px;
+}
+
+.addressInput {
+  flex: 1;
+  border-radius: 0 3px 3px 0;
+}
+
+.textInput:focus-visible,
+.addressInput:focus-visible {
+  border-color: #6f5a2b;
+}
+
+.hint {
+  margin: 0 0 7px;
+  color: #777168;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.editButton,
+.primaryButton,
+.cancelButton {
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.editButton {
+  padding: 8px 12px;
+  border: 1px solid #c9c7c0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+}
+
+.editButton:hover:enabled,
+.cancelButton:hover:enabled {
+  background: #f3efe6;
+}
+
+.primaryButton,
+.cancelButton {
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.primaryButton {
+  border: 1px solid #6e6557;
+  background: #6e6557;
+  color: #fff;
+}
+
+.primaryButton:hover:enabled {
+  background: #4f473b;
+}
+
+.cancelButton {
+  border: 1px solid #c9c7c0;
+  background: transparent;
+  color: inherit;
+}
+
+.primaryButton:disabled,
+.cancelButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.error {
+  margin: 0;
+  color: #8d3c32;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.status {
+  margin: 0 0 12px;
+  color: #5c6b47;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .context div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .actions {
+    flex-direction: column;
+  }
+
+  .primaryButton {
+    width: 100%;
+  }
+}

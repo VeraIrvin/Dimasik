@@ -10,14 +10,16 @@ use crate::content::{
 use crate::error::{ApiError, ApiResult};
 use crate::geo::{CanonicalProvinces, GeoRuntime};
 use crate::util::{
-    effective_settlement_url, is_js_whitespace, is_valid_settlement_url, is_valid_slug, iso_now,
-    js_collapse_whitespace, js_number, js_trim, now_unix, parse_js_date_ms, random_id, ru_compare,
-    utf16_len, SETTLEMENT_URL_PREFIX,
+    effective_district_url, effective_settlement_url, is_js_whitespace, is_valid_district_url,
+    is_valid_settlement_url, is_valid_slug, iso_now, js_collapse_whitespace, js_number, js_trim,
+    now_unix, parse_js_date_ms, random_id, ru_compare, utf16_len, DISTRICT_URL_PREFIX,
+    SETTLEMENT_URL_PREFIX,
 };
 
 pub const MAX_TITLE_LENGTH: usize = 1_000;
 pub const MAX_ID_LENGTH: usize = 100;
 pub const MAX_SETTLEMENT_NAME_LENGTH: usize = 200;
+pub const MAX_DISTRICT_NAME_LENGTH: usize = 200;
 pub const MAX_YEAR_LENGTH: usize = 100;
 pub const MAX_ARCHIVE_REFERENCE_LENGTH: usize = 300;
 pub const MAX_AUTHOR_LENGTH: usize = 300;
@@ -171,6 +173,22 @@ pub fn validate_settlement_name(value: &Value) -> ApiResult<String> {
     if utf16_len(name) > MAX_SETTLEMENT_NAME_LENGTH {
         return Err(bad(format!(
             "Название населённого пункта должно быть не длиннее {MAX_SETTLEMENT_NAME_LENGTH} символов."
+        )));
+    }
+    Ok(name.to_string())
+}
+
+pub fn validate_district_name(value: &Value) -> ApiResult<String> {
+    let Some(raw) = value.as_str() else {
+        return Err(bad("Название уезда должно быть строкой."));
+    };
+    let name = js_trim(raw);
+    if name.is_empty() {
+        return Err(bad("Название уезда не должно быть пустым."));
+    }
+    if utf16_len(name) > MAX_DISTRICT_NAME_LENGTH {
+        return Err(bad(format!(
+            "Название уезда должно быть не длиннее {MAX_DISTRICT_NAME_LENGTH} символов."
         )));
     }
     Ok(name.to_string())
@@ -855,11 +873,11 @@ fn load_settlement(
 #[derive(Clone, Debug)]
 pub struct PostImageRow {
     pub id: String,
-    /// Exactly one of the three owner columns is set while the image is
-    /// attached to a post, a province or a settlement reference.
+    /// Exactly one owner column is set while the image is attached.
     pub post_id: Option<String>,
     pub province_id: Option<String>,
     pub settlement_id: Option<String>,
+    pub district_id: Option<String>,
     pub original_key: String,
     pub thumbnail_key: String,
     pub width: i64,
@@ -882,10 +900,12 @@ impl PostImageRow {
     /// entity-owned image must never be claimed, cancelled or swept as if it
     /// were unattached.
     pub fn is_unowned(&self) -> bool {
-        self.post_id.is_none() && self.province_id.is_none() && self.settlement_id.is_none()
+        self.post_id.is_none()
+            && self.province_id.is_none()
+            && self.settlement_id.is_none()
+            && self.district_id.is_none()
     }
 
-    /// True while a post, province or settlement reference owns the row.
     pub fn is_attached(&self) -> bool {
         !self.is_unowned()
     }
@@ -912,14 +932,12 @@ pub struct PostRow {
 }
 
 const POST_COLUMNS: &str = "id, province_id, title, body_json, created_at, updated_at, created_ms, uyezd_id, settlement_id, year, archive_reference, category, author";
-const IMAGE_COLUMNS: &str = "id, post_id, province_id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms";
-const IMAGE_COLUMNS_I: &str = "i.id, i.post_id, i.province_id, i.settlement_id, i.original_key, i.thumbnail_key, i.width, i.height, i.position, i.created_at, i.created_ms, i.attached_ms";
-/// SQL guard that narrows a statement to rows no post, province or settlement
-/// owns. Every cleanup, claiming and cancellation predicate has to honour all
-/// three owner columns, so an entity-owned image is never mistaken for a
-/// pending upload.
+const IMAGE_COLUMNS: &str = "id, post_id, province_id, settlement_id, district_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms";
+const IMAGE_COLUMNS_I: &str = "i.id, i.post_id, i.province_id, i.settlement_id, i.district_id, i.original_key, i.thumbnail_key, i.width, i.height, i.position, i.created_at, i.created_ms, i.attached_ms";
+/// Every cleanup, claiming and cancellation predicate must honour all owner
+/// columns, so an entity-owned image is never mistaken for a pending upload.
 const IMAGE_UNOWNED_GUARD: &str =
-    "post_id IS NULL AND province_id IS NULL AND settlement_id IS NULL";
+    "post_id IS NULL AND province_id IS NULL AND settlement_id IS NULL AND district_id IS NULL";
 
 fn post_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PostRow> {
     Ok(PostRow {
@@ -946,14 +964,15 @@ fn image_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PostImageRow> {
         post_id: row.get(1)?,
         province_id: row.get(2)?,
         settlement_id: row.get(3)?,
-        original_key: row.get(4)?,
-        thumbnail_key: row.get(5)?,
-        width: row.get(6)?,
-        height: row.get(7)?,
-        position: row.get(8)?,
-        created_at: row.get(9)?,
-        created_ms: row.get(10)?,
-        attached_ms: row.get(11)?,
+        district_id: row.get(4)?,
+        original_key: row.get(5)?,
+        thumbnail_key: row.get(6)?,
+        width: row.get(7)?,
+        height: row.get(8)?,
+        position: row.get(9)?,
+        created_at: row.get(10)?,
+        created_ms: row.get(11)?,
+        attached_ms: row.get(12)?,
     })
 }
 
@@ -990,13 +1009,13 @@ fn load_post_images(connection: &Connection, post_id: &str) -> ApiResult<Vec<Pos
     Ok(images)
 }
 
-/// Which of the three mutually exclusive owner columns an image belongs to.
-/// The column names are internal constants, never user input.
+/// Which mutually exclusive owner column an image belongs to.
 #[derive(Clone, Copy)]
 enum ImageOwner {
     Post,
     Province,
     Settlement,
+    District,
 }
 
 impl ImageOwner {
@@ -1005,16 +1024,24 @@ impl ImageOwner {
             ImageOwner::Post => "post_id",
             ImageOwner::Province => "province_id",
             ImageOwner::Settlement => "settlement_id",
+            ImageOwner::District => "district_id",
         }
     }
 
-    /// Guard that the two owner columns this owner never uses stay NULL, so a
-    /// claim or a detach can never overwrite a foreign attachment.
     fn other_columns_null(self) -> &'static str {
         match self {
-            ImageOwner::Post => "province_id IS NULL AND settlement_id IS NULL",
-            ImageOwner::Province => "post_id IS NULL AND settlement_id IS NULL",
-            ImageOwner::Settlement => "post_id IS NULL AND province_id IS NULL",
+            ImageOwner::Post => {
+                "province_id IS NULL AND settlement_id IS NULL AND district_id IS NULL"
+            }
+            ImageOwner::Province => {
+                "post_id IS NULL AND settlement_id IS NULL AND district_id IS NULL"
+            }
+            ImageOwner::Settlement => {
+                "post_id IS NULL AND province_id IS NULL AND district_id IS NULL"
+            }
+            ImageOwner::District => {
+                "post_id IS NULL AND province_id IS NULL AND settlement_id IS NULL"
+            }
         }
     }
 }
@@ -1162,11 +1189,14 @@ pub fn search_published_posts(
     let folded_query = query.to_lowercase();
     let mut statement = connection.prepare(
         "SELECT post.id, post.title, post.body_json, p.id, p.slug,\n\
-                post.settlement_id, s.id, s.name, s.url\n\
+                post.settlement_id, s.id, s.name, s.url, d.id, d.url\n\
          FROM posts post\n\
          JOIN provinces p ON p.id = post.province_id AND p.published = 1\n\
          LEFT JOIN settlements s\n\
            ON s.id = post.settlement_id AND s.province_id = post.province_id\n\
+         LEFT JOIN districts d\n\
+           ON d.id = COALESCE(post.uyezd_id, s.uyezd_id)\n\
+          AND d.province_id = post.province_id\n\
          ORDER BY post.created_ms DESC, post.id ASC",
     )?;
     let mut rows = statement.query([])?;
@@ -1212,12 +1242,20 @@ pub fn search_published_posts(
         let settlement_id: Option<String> = row.get(6)?;
         let settlement_name: Option<String> = row.get(7)?;
         let settlement_url: Option<String> = row.get(8)?;
+        let district_id: Option<String> = row.get(9)?;
+        let district_url: Option<String> = row.get(10)?;
         let href = match settlement_id.as_deref() {
             Some(current_id) if stored_settlement_id.as_deref() == Some(current_id) => format!(
                 "{}#post-{id}",
                 effective_settlement_url(settlement_url.as_deref(), current_id)
             ),
-            _ => format!("/guberniya/{slug}#post-{id}"),
+            _ => match district_id.as_deref() {
+                Some(district_id) => format!(
+                    "{}#post-{id}",
+                    effective_district_url(district_url.as_deref(), district_id)
+                ),
+                None => format!("/guberniya/{slug}#post-{id}"),
+            },
         };
         results.push(serde_json::json!({
             "id": id,
@@ -1327,8 +1365,7 @@ fn validate_image_ids_replacement(
 /// the row must be unowned, never-attached and unexpired, and `position`
 /// becomes its stored order. A lost compare-and-set is classified by
 /// [`claim_failure`], so an id that is unknown, expired, fenced for cleanup
-/// or already attached to a post, a province or a settlement never becomes a
-/// silent no-op.
+/// or already attached to any supported owner never becomes a silent no-op.
 fn claim_image(
     transaction: &rusqlite::Transaction<'_>,
     owner: ImageOwner,
@@ -1472,23 +1509,34 @@ fn replace_post_images(
 /// attached, possibly to a different kind of owner) instead of a generic 400
 /// or 500.
 fn claim_failure(connection: &Connection, image_id: &str) -> ApiResult<ApiError> {
-    let existing: Option<(Option<String>, Option<String>, Option<String>, Option<i64>)> =
-        connection
-            .query_row(
-                "SELECT post_id, province_id, settlement_id, attached_ms FROM post_images WHERE id = ?1",
-                params![image_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
+    let existing: Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+    )> = connection
+        .query_row(
+            "SELECT post_id, province_id, settlement_id, district_id, attached_ms FROM post_images WHERE id = ?1",
+            params![image_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()?;
     Ok(match existing {
-        Some((Some(_), _, _, _)) => ApiError::conflict("Изображение уже привязано к публикации."),
-        Some((None, Some(_), _, _)) | Some((None, None, Some(_), _)) => {
+        Some((Some(_), _, _, _, _)) => {
+            ApiError::conflict("Изображение уже привязано к публикации.")
+        }
+        Some((None, Some(_), _, _, _))
+        | Some((None, None, Some(_), _, _))
+        | Some((None, None, None, Some(_), _)) => {
             ApiError::conflict("Изображение уже привязано к другой странице.")
         }
-        Some((None, None, None, Some(_))) => {
+        Some((None, None, None, None, Some(_))) => {
             ApiError::not_found("Изображение не найдено: загрузка удалена.")
         }
-        Some((None, None, None, None)) => ApiError::not_found("Срок загрузки изображения истёк."),
+        Some((None, None, None, None, None)) => {
+            ApiError::not_found("Срок загрузки изображения истёк.")
+        }
         None => ApiError::not_found("Изображение не найдено."),
     })
 }
@@ -1513,15 +1561,12 @@ pub fn load_image_access(connection: &Connection, id: &str) -> ApiResult<Option<
     if id.is_empty() || utf16_len(id) > MAX_ID_LENGTH {
         return Ok(None);
     }
-    // An image attached to a post, a province description or a settlement
-    // reference is publicly readable exactly while the owning province is
-    // published; pending, provisional, detached and fenced rows have no
-    // owner and stay admin-only in the route.
-    let sql = "SELECT i.id, i.post_id, i.province_id, i.settlement_id, i.original_key,\n\
-                      i.thumbnail_key, i.width, i.height, i.position, i.created_at,\n\
-                      i.created_ms, i.attached_ms,\n\
+    let sql = "SELECT i.id, i.post_id, i.province_id, i.settlement_id, i.district_id,\n\
+                      i.original_key, i.thumbnail_key, i.width, i.height, i.position,\n\
+                      i.created_at, i.created_ms, i.attached_ms,\n\
                       CASE\n\
-                        WHEN p.published = 1 OR pv.published = 1 OR ps.published = 1 THEN 1\n\
+                        WHEN p.published = 1 OR pv.published = 1 OR ps.published = 1\n\
+                          OR pd.published = 1 THEN 1\n\
                         ELSE 0\n\
                       END\n\
                FROM post_images i\n\
@@ -1530,12 +1575,14 @@ pub fn load_image_access(connection: &Connection, id: &str) -> ApiResult<Option<
                LEFT JOIN provinces pv ON pv.id = i.province_id\n\
                LEFT JOIN settlements se ON se.id = i.settlement_id\n\
                LEFT JOIN provinces ps ON ps.id = se.province_id\n\
+               LEFT JOIN districts d ON d.id = i.district_id\n\
+               LEFT JOIN provinces pd ON pd.id = d.province_id\n\
                WHERE i.id = ?1";
     let access = connection
         .query_row(sql, params![id], |row| {
             Ok(ImageAccess {
                 image: image_from_row(row)?,
-                published: row.get::<_, i64>(12)? == 1,
+                published: row.get::<_, i64>(13)? == 1,
             })
         })
         .optional()?;
@@ -1550,8 +1597,8 @@ pub fn begin_image_upload(connection: &Connection, id: &str) -> ApiResult<()> {
     let created_ms = parse_js_date_ms(&timestamp).unwrap_or_else(|| now_unix() * 1_000);
     let (original_key, thumbnail_key) = crate::s3::image_keys(id)?;
     connection.execute(
-        "INSERT INTO post_images (id, post_id, province_id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
-         VALUES (?1, NULL, NULL, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, 0)",
+        "INSERT INTO post_images (id, post_id, province_id, settlement_id, district_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
+         VALUES (?1, NULL, NULL, NULL, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, 0)",
         params![id, original_key, thumbnail_key, timestamp, created_ms],
     )?;
     Ok(())
@@ -1599,10 +1646,12 @@ pub fn mark_upload_failed(connection: &Connection, id: &str) -> ApiResult<Option
     let created_ms = parse_js_date_ms(&timestamp).unwrap_or_else(|| now_unix() * 1_000);
     let (original_key, thumbnail_key) = crate::s3::image_keys(id)?;
     let changed = connection.execute(
-        "INSERT INTO post_images (id, post_id, province_id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
-         VALUES (?1, NULL, NULL, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, ?5)\n\
+        "INSERT INTO post_images (id, post_id, province_id, settlement_id, district_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)\n\
+         VALUES (?1, NULL, NULL, NULL, NULL, ?2, ?3, 0, 0, 0, ?4, ?5, ?5)\n\
          ON CONFLICT(id) DO UPDATE SET attached_ms = excluded.attached_ms\n\
-         WHERE post_images.post_id IS NULL AND post_images.province_id IS NULL AND post_images.settlement_id IS NULL AND post_images.attached_ms = 0",
+         WHERE post_images.post_id IS NULL AND post_images.province_id IS NULL\n\
+           AND post_images.settlement_id IS NULL AND post_images.district_id IS NULL\n\
+           AND post_images.attached_ms = 0",
         params![id, original_key, thumbnail_key, timestamp, created_ms],
     )?;
     let sql = format!("SELECT {IMAGE_COLUMNS} FROM post_images WHERE id = ?1");
@@ -1762,6 +1811,151 @@ impl ImageCleanupCursor {
     }
 }
 
+#[derive(Clone)]
+struct DistrictRow {
+    id: String,
+    province_id: String,
+    canonical_name: String,
+    name: String,
+    url: Option<String>,
+    description_json: String,
+}
+
+fn load_district_options(connection: &Connection, province_id: &str) -> ApiResult<Vec<Value>> {
+    let mut statement = connection.prepare(
+        "SELECT id, COALESCE(display_name, name), url FROM districts\n\
+         WHERE province_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = statement.query_map(params![province_id], |row| {
+        let id: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        let url: Option<String> = row.get(2)?;
+        Ok(serde_json::json!({
+            "id": id,
+            "name": name,
+            "guberniaId": province_id,
+            "url": effective_district_url(url.as_deref(), &id),
+        }))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(ApiError::from)
+}
+
+pub fn get_published_district_options(
+    connection: &Connection,
+    province_id: &str,
+) -> ApiResult<Value> {
+    let published: Option<bool> = connection
+        .query_row(
+            "SELECT published = 1 FROM provinces WHERE id = ?1",
+            params![province_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if published != Some(true) {
+        return Err(ApiError::not_found("Губерния не найдена."));
+    }
+    let districts = load_district_options(connection, province_id)?;
+    Ok(serde_json::json!({ "districts": districts }))
+}
+
+fn load_district(
+    connection: &Connection,
+    province_id: &str,
+    district_id: &str,
+) -> ApiResult<Option<DistrictRow>> {
+    connection
+        .query_row(
+            "SELECT id, province_id, name, COALESCE(display_name, name), url, description_json\n\
+             FROM districts WHERE province_id = ?1 AND id = ?2",
+            params![province_id, district_id],
+            |row| {
+                Ok(DistrictRow {
+                    id: row.get(0)?,
+                    province_id: row.get(1)?,
+                    canonical_name: row.get(2)?,
+                    name: row.get(3)?,
+                    url: row.get(4)?,
+                    description_json: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(ApiError::from)
+}
+
+fn load_district_post_images(
+    connection: &Connection,
+    province_id: &str,
+    district_id: &str,
+) -> ApiResult<HashMap<String, Vec<PostImageRow>>> {
+    let sql = "SELECT i.id, i.post_id, i.province_id, i.settlement_id, i.district_id,\n\
+                      i.original_key, i.thumbnail_key, i.width, i.height, i.position,\n\
+                      i.created_at, i.created_ms, i.attached_ms\n\
+               FROM post_images i\n\
+               JOIN posts post ON post.id = i.post_id\n\
+               LEFT JOIN settlements settlement\n\
+                 ON settlement.id = post.settlement_id AND settlement.province_id = post.province_id\n\
+               WHERE post.province_id = ?1\n\
+                 AND COALESCE(post.uyezd_id, settlement.uyezd_id) = ?2\n\
+               ORDER BY i.position ASC";
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map(params![province_id, district_id], image_from_row)?;
+    let mut grouped: HashMap<String, Vec<PostImageRow>> = HashMap::new();
+    for row in rows {
+        let image = row?;
+        if let Some(post_id) = image.post_id.clone() {
+            grouped.entry(post_id).or_default().push(image);
+        }
+    }
+    Ok(grouped)
+}
+
+fn load_district_posts(
+    connection: &Connection,
+    province_id: &str,
+    district_id: &str,
+) -> ApiResult<Vec<PostRow>> {
+    let sql = "SELECT post.id, post.province_id, post.title, post.body_json,\n\
+                      post.created_at, post.updated_at, post.created_ms, post.uyezd_id,\n\
+                      post.settlement_id, post.year, post.archive_reference, post.category, post.author\n\
+               FROM posts post\n\
+               LEFT JOIN settlements settlement\n\
+                 ON settlement.id = post.settlement_id AND settlement.province_id = post.province_id\n\
+               WHERE post.province_id = ?1\n\
+                 AND COALESCE(post.uyezd_id, settlement.uyezd_id) = ?2\n\
+               ORDER BY post.position ASC";
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map(params![province_id, district_id], post_from_row)?;
+    let mut posts = Vec::new();
+    for row in rows {
+        posts.push(row?);
+    }
+    let mut images_by_post = load_district_post_images(connection, province_id, district_id)?;
+    for post in &mut posts {
+        if let Some(images) = images_by_post.remove(&post.id) {
+            post.images = images;
+        }
+    }
+    Ok(posts)
+}
+
+fn load_district_settlements(
+    connection: &Connection,
+    province_id: &str,
+    district_id: &str,
+) -> ApiResult<Vec<SettlementRow>> {
+    let sql = "SELECT id, province_id, name, uyezd_id, latitude, longitude,\n\
+                      created_at, url, type FROM settlements\n\
+               WHERE province_id = ?1 AND uyezd_id = ?2 ORDER BY position ASC";
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map(params![province_id, district_id], settlement_from_row)?;
+    let mut settlements = Vec::new();
+    for row in rows {
+        settlements.push(row?);
+    }
+    Ok(settlements)
+}
+
 /// Ordering key of one cleanup candidate: detached rows by their detach time,
 /// fenced rows first (a negative marker orders before every timestamp) and
 /// everything else by its upload creation time.
@@ -1815,6 +2009,7 @@ pub fn build_published_gubernia(
     // empty), so the public contract never has to distinguish "absent" from
     // "none" — exactly like the images array of a post.
     let images = load_owner_images(connection, ImageOwner::Province, id)?;
+    let districts = load_district_options(connection, id)?;
 
     let mut out = Map::new();
     out.insert("id".to_string(), Value::String(id.to_string()));
@@ -1827,6 +2022,7 @@ pub fn build_published_gubernia(
     );
     out.insert("posts".to_string(), Value::Array(posts));
     out.insert("settlements".to_string(), Value::Array(settlements));
+    out.insert("districts".to_string(), Value::Array(districts));
     Ok(Value::Object(out))
 }
 
@@ -1982,6 +2178,177 @@ pub fn find_published_gubernia_by_slug(
         )?)),
         None => Ok(None),
     }
+}
+
+fn build_published_district(
+    connection: &Connection,
+    canonical: &CanonicalProvinces,
+    district: &DistrictRow,
+    province_slug: &str,
+) -> ApiResult<Value> {
+    let feature = require_feature(canonical, &district.province_id)?;
+    let posts = load_district_posts(connection, &district.province_id, &district.id)?
+        .iter()
+        .map(post_value)
+        .collect::<ApiResult<Vec<_>>>()?;
+    let settlements = load_district_settlements(connection, &district.province_id, &district.id)?
+        .iter()
+        .map(settlement_value)
+        .collect::<Vec<_>>();
+    let images = load_owner_images(connection, ImageOwner::District, &district.id)?;
+    Ok(serde_json::json!({
+        "id": district.id,
+        "name": district.name,
+        "guberniaId": district.province_id,
+        "url": effective_district_url(district.url.as_deref(), &district.id),
+        "description": description_value(Some(&district.description_json))?,
+        "images": images.iter().map(image_value).collect::<Vec<_>>(),
+        "gubernia": {
+            "id": district.province_id,
+            "name": feature.name,
+            "slug": province_slug,
+            "districts": load_district_options(connection, &district.province_id)?,
+        },
+        "posts": posts,
+        "settlements": settlements,
+    }))
+}
+
+pub fn find_published_district_by_slug(
+    connection: &Connection,
+    canonical: &CanonicalProvinces,
+    slug: &str,
+) -> ApiResult<Option<Value>> {
+    if !is_valid_slug(slug) {
+        return Ok(None);
+    }
+    let url = format!("{DISTRICT_URL_PREFIX}{slug}");
+    let row: Option<(DistrictRow, String)> = connection
+        .query_row(
+            "SELECT d.id, d.province_id, d.name, COALESCE(d.display_name, d.name),\n\
+                    d.url, d.description_json, p.slug\n\
+             FROM districts d JOIN provinces p ON p.id = d.province_id\n\
+             WHERE p.published = 1 AND COALESCE(d.url, '/uezd/' || d.id) = ?1\n\
+             LIMIT 1",
+            params![url],
+            |row| {
+                Ok((
+                    DistrictRow {
+                        id: row.get(0)?,
+                        province_id: row.get(1)?,
+                        canonical_name: row.get(2)?,
+                        name: row.get(3)?,
+                        url: row.get(4)?,
+                        description_json: row.get(5)?,
+                    },
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    match row {
+        Some((district, province_slug)) => Ok(Some(build_published_district(
+            connection,
+            canonical,
+            &district,
+            &province_slug,
+        )?)),
+        None => Ok(None),
+    }
+}
+
+fn assert_unique_district_url(
+    connection: &Connection,
+    url: &str,
+    except_id: &str,
+) -> ApiResult<()> {
+    let collision: Option<String> = connection
+        .query_row(
+            "SELECT id FROM districts\n\
+             WHERE id <> ?2\n\
+               AND (COALESCE(url, '/uezd/' || id) = ?1 OR '/uezd/' || id = ?1)\n\
+             LIMIT 1",
+            params![url, except_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if collision.is_some() {
+        return Err(ApiError::conflict(
+            "Этот адрес страницы уже используется другим уездом.",
+        ));
+    }
+    Ok(())
+}
+
+pub fn update_district_publication(
+    connection: &mut Connection,
+    canonical: &CanonicalProvinces,
+    province_id: &str,
+    district_id: &str,
+    name_value: &Value,
+    url_value: &Value,
+    description_value: Option<&Value>,
+    image_ids: Option<&Value>,
+) -> ApiResult<(Value, bool)> {
+    let name = validate_district_name(name_value)?;
+    let Some(url) = url_value.as_str().filter(|url| is_valid_district_url(url)) else {
+        return Err(bad(
+            "Адрес должен иметь вид /uezd/<slug> из строчных латинских букв, цифр и одиночных дефисов.",
+        ));
+    };
+    let description = validate_description(description_value)?;
+    let replacement = validate_optional_image_ids(image_ids)?;
+    require_feature(canonical, province_id)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let province = require_published(&transaction, province_id)?;
+    let Some(mut district) = load_district(&transaction, province_id, district_id)?
+    else {
+        return Err(ApiError::not_found("Уезд не найден."));
+    };
+    assert_unique_district_url(&transaction, url, district_id)?;
+    let now_ms = now_unix() * 1_000;
+    let detached = match &replacement {
+        Some(image_ids) => {
+            let current = load_owner_images(&transaction, ImageOwner::District, district_id)?;
+            replace_images(
+                &transaction,
+                ImageOwner::District,
+                district_id,
+                image_ids,
+                &current,
+                now_ms,
+            )?
+        }
+        None => false,
+    };
+    let description_json = description
+        .map(|document| serde_json::to_string(&document))
+        .transpose()?
+        .unwrap_or_default();
+    let fallback = format!("{DISTRICT_URL_PREFIX}{district_id}");
+    let stored_url = (url != fallback).then_some(url);
+    let display_name = (name != district.canonical_name).then_some(name);
+    transaction.execute(
+        "UPDATE districts SET display_name = ?1, url = ?2, description_json = ?3\n\
+         WHERE id = ?4 AND province_id = ?5",
+        params![display_name, stored_url, description_json, district_id, province_id],
+    )?;
+    district.name = display_name
+        .clone()
+        .unwrap_or_else(|| district.canonical_name.clone());
+    district.url = stored_url.map(str::to_string);
+    district.description_json = description_json;
+    let value = build_published_district(
+        &transaction,
+        canonical,
+        &district,
+        province
+            .slug
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("published province has no slug"))?,
+    )?;
+    transaction.commit()?;
+    Ok((value, detached))
 }
 
 pub fn find_published_settlement_id_by_slug(
@@ -2160,6 +2527,16 @@ pub fn unpublish_gubernia(
         "UPDATE post_images SET settlement_id = NULL, attached_ms = ?1\n\
          WHERE settlement_id IN (SELECT id FROM settlements WHERE province_id = ?2)",
         params![now_ms, id],
+    )?;
+    transaction.execute(
+        "UPDATE post_images SET district_id = NULL, attached_ms = ?1\n\
+         WHERE district_id IN (SELECT id FROM districts WHERE province_id = ?2)",
+        params![now_ms, id],
+    )?;
+    transaction.execute(
+        "UPDATE districts SET display_name = NULL, url = NULL, description_json = ''\n\
+         WHERE province_id = ?1",
+        params![id],
     )?;
     transaction.execute("DELETE FROM posts WHERE province_id = ?1", params![id])?;
     transaction.execute("DELETE FROM settlements WHERE province_id = ?1", params![id])?;
@@ -2729,11 +3106,14 @@ mod tests {
     // Post images: validation, claiming and cleanup bookkeeping
     // -----------------------------------------------------------------------
 
-    /// Minimal schemas for image owners and the version-5 ownership migration.
+    /// Minimal schemas for all image owners through the district-page migration.
     fn image_test_connection() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(include_str!("../migrations/0001_init.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/0002_districts.sql"))
             .unwrap();
         connection
             .execute_batch(include_str!("../migrations/0004_post_images.sql"))
@@ -2743,6 +3123,9 @@ mod tests {
             .unwrap();
         connection
             .execute_batch(include_str!("../migrations/0006_post_author.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/0007_district_pages.sql"))
             .unwrap();
         connection
     }
@@ -3484,12 +3867,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Entity galleries: the three owner columns are mutually exclusive
+    // Entity galleries: all owner columns are mutually exclusive
     // -----------------------------------------------------------------------
 
-    /// A gallery attached to a province or a settlement is never treated as a
-    /// pending upload: cross-owner claims fail, and the TTL sweep listing,
-    /// cancellation, fencing and row drops all leave it alone.
+    /// An entity gallery is never treated as a pending upload: cross-owner
+    /// claims fail, and cleanup operations leave it alone.
     #[test]
     fn entity_owned_images_are_immune_to_pending_cleanup() {
         let mut connection = image_test_connection();

@@ -14,7 +14,7 @@ import RichTextField, {
   usePostDocumentEditor,
   type RichTextFieldHandle,
 } from "@/components/RichTextField";
-import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
+import type { DistrictOption, GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import { useDistrictOptions } from "./useDistrictOptions";
 import PostImageUploader, { type PostImageUploaderHandle } from "./PostImageUploader";
 import styles from "./ProvincePostEditor.module.css";
@@ -27,6 +27,8 @@ const MAX_ARCHIVE_REFERENCE_LENGTH = 300;
 type ProvincePostEditorProps = {
   guberniaId: string;
   provinces: PublishedOption[];
+  /** Current server catalogue for the page's province; refreshes preserve the draft. */
+  districts?: DistrictOption[];
   settlements: Settlement[];
   categories: string[];
   post?: GuberniaPost;
@@ -35,6 +37,11 @@ type ProvincePostEditorProps = {
    * cancelling; ignored while editing an existing post.
    */
   defaultSettlementId?: string;
+  /**
+   * District preselected for a new post when there is no settlement default;
+   * ignored while editing an existing post.
+   */
+  defaultUyezdId?: string;
   /** Called once the editor is finished: the post was saved or editing stopped. */
   onDone?: () => void;
 };
@@ -42,10 +49,12 @@ type ProvincePostEditorProps = {
 export default function ProvincePostEditor({
   guberniaId,
   provinces,
+  districts: currentDistricts,
   settlements,
   categories,
   post,
   defaultSettlementId,
+  defaultUyezdId,
   onDone,
 }: ProvincePostEditorProps) {
   const router = useRouter();
@@ -70,7 +79,10 @@ export default function ProvincePostEditor({
           ) ?? null,
     [defaultSettlementId, guberniaId, isEditing, settlements],
   );
-  const defaultDistrictId = post?.uyezdId ?? defaultSettlement?.uyezdId ?? "";
+  const defaultDistrictId =
+    post?.uyezdId ??
+    defaultSettlement?.uyezdId ??
+    (!isEditing && defaultUyezdId ? defaultUyezdId : "");
   const [title, setTitle] = useState(post?.title ?? "");
   const [category, setCategory] = useState<string>(post?.category ?? "");
   const [selectedProvinceId, setSelectedProvinceId] = useState(
@@ -95,7 +107,7 @@ export default function ProvincePostEditor({
   const imageUploaderRef = useRef<PostImageUploaderHandle>(null);
 
   const { districts, loading: districtsLoading, error: districtsError } =
-    useDistrictOptions(selectedProvinceId);
+    useDistrictOptions(selectedProvinceId, guberniaId, currentDistricts);
   const filteredSettlements = useMemo(
     () =>
       settlements

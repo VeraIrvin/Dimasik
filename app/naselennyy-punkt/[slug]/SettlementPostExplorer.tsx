@@ -4,13 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import PostFeed from "@/app/guberniya/[slug]/PostFeed";
 import ProvinceFilterControls from "@/app/guberniya/[slug]/ProvinceFilterControls";
 import ProvinceQuickNavigation from "@/app/guberniya/[slug]/ProvinceQuickNavigation";
-import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
+import type { DistrictOption, GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import styles from "./page.module.css";
 
 type Props = {
   posts: GuberniaPost[];
   guberniaId: string;
   provinces: PublishedOption[];
+  districts: DistrictOption[];
   settlements: Settlement[];
   /** Category options configured in the admin settings. */
   categories: string[];
@@ -35,6 +36,7 @@ export default function SettlementPostExplorer({
   posts,
   guberniaId,
   provinces,
+  districts,
   settlements,
   categories,
   districtNames,
@@ -142,6 +144,7 @@ export default function SettlementPostExplorer({
         posts={visiblePosts}
         guberniaId={guberniaId}
         provinces={provinces}
+        districts={districts}
         settlements={settlements}
         categories={categories}
         districtNames={districtNames}

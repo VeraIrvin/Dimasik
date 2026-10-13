@@ -8,7 +8,7 @@ import RichDocumentPreview from "@/components/RichDocumentPreview";
 import AdminCreationPanel from "./AdminCreationPanel";
 import PostFeed from "./PostFeed";
 import PostImageGallery from "./PostImageGallery";
-import ProvinceFilterControls, { type DistrictOption } from "./ProvinceFilterControls";
+import ProvinceFilterControls from "./ProvinceFilterControls";
 import ProvinceQuickNavigation from "./ProvinceQuickNavigation";
 import styles from "./page.module.css";
 
@@ -34,7 +34,7 @@ export default function ProvinceExplorer({
   highlightQuery,
 }: Props) {
   const router = useRouter();
-  const [districts, setDistricts] = useState<DistrictOption[]>([]);
+  const districts = gubernia.districts;
   const [districtId, setDistrictId] = useState<string | null>(null);
   const [settlementId, setSettlementId] = useState<string | null>(null);
   const [year, setYear] = useState("");
@@ -141,9 +141,10 @@ export default function ProvinceExplorer({
     if (settlement) router.push(`${settlement.url}?from=province`);
   }, [router, settlementById]);
 
-  const updateDistricts = useCallback((options: DistrictOption[]) => {
-    setDistricts(options);
-  }, []);
+  const openDistrict = useCallback((nextDistrictId: string) => {
+    const district = gubernia.districts.find((option) => option.id === nextDistrictId);
+    if (district) router.push(district.url);
+  }, [gubernia.districts, router]);
 
   function resetFilters() {
     setDistrictId(null);
@@ -200,11 +201,12 @@ export default function ProvinceExplorer({
           guberniaId={gubernia.id}
           guberniaName={gubernia.name}
           settlements={provinceSettlements}
+          districtNames={districtNames}
           selectedDistrictId={districtId}
           selectedSettlementId={settlementId}
           onDistrictSelect={selectDistrict}
+          onDistrictOpen={openDistrict}
           onSettlementOpen={openSettlement}
-          onDistrictsLoad={updateDistricts}
         />
       </div>
 
@@ -213,6 +215,7 @@ export default function ProvinceExplorer({
           <AdminCreationPanel
             guberniaId={gubernia.id}
             provinces={provinces}
+            districts={gubernia.districts}
             settlements={settlements}
             categories={categories}
             settlementTypes={settlementTypes}
@@ -233,6 +236,7 @@ export default function ProvinceExplorer({
           posts={visiblePosts}
           guberniaId={gubernia.id}
           provinces={provinces}
+          districts={gubernia.districts}
           settlements={settlements}
           categories={categories}
           districtNames={districtNames}

@@ -1346,6 +1346,7 @@ fn image_owner_migration_preserves_existing_post_attachments() {
     assert_eq!(access.image.post_id.as_deref(), Some("old-post"));
     assert!(access.image.province_id.is_none());
     assert!(access.image.settlement_id.is_none());
+    assert!(access.image.district_id.is_none());
     assert_eq!(access.image.original_key, "existing/original");
     assert_eq!(access.image.thumbnail_key, "existing/thumbnail");
     assert_eq!(access.image.position, 2);
@@ -1420,4 +1421,195 @@ fn post_author_migration_defaults_old_rows_and_is_idempotent() {
         )
         .unwrap();
     assert_eq!(preserved, "Сохранённый автор");
+}
+
+#[test]
+fn district_page_migration_preserves_data_and_every_existing_image_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut connection = db::open_database(&dir.path().join("v6.sqlite")).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_init.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0002_districts.sql"))
+        .unwrap();
+    connection
+        .execute_batch("ALTER TABLE provinces RENAME COLUMN description TO description_json;")
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0004_post_images.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0005_entity_images.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0006_post_author.sql"))
+        .unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+             INSERT INTO schema_migrations VALUES
+               (1, 'old'), (2, 'old'), (3, 'old'), (4, 'old'), (5, 'old'), (6, 'old');
+             INSERT INTO provinces (id, published, slug) VALUES ('ryazan', 1, 'ryazanskaya');
+             INSERT INTO districts (id, province_id, name, position)
+               VALUES ('uyezd-1897-1', 'ryazan', 'Скопинский уезд', 0);
+             INSERT INTO settlements
+               (id, province_id, name, uyezd_id, latitude, longitude, created_at, position)
+               VALUES ('settlement', 'ryazan', 'Село', 'uyezd-1897-1', 1, 1, 'old', 0);
+             INSERT INTO posts
+               (id, province_id, title, body_json, created_at, updated_at, created_ms, position)
+               VALUES ('post', 'ryazan', 'Запись', '{}', 'old', 'old', 1, 0);
+             INSERT INTO post_images
+               (id, post_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)
+               VALUES ('post-image', 'post', 'p/o', 'p/t', 1, 1, 0, 'old', 1, 2);
+             INSERT INTO post_images
+               (id, province_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)
+               VALUES ('province-image', 'ryazan', 'g/o', 'g/t', 1, 1, 0, 'old', 1, 2);
+             INSERT INTO post_images
+               (id, settlement_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)
+               VALUES ('settlement-image', 'settlement', 's/o', 's/t', 1, 1, 0, 'old', 1, 2);
+             INSERT INTO post_images
+               (id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)
+               VALUES ('cleanup-image', 'c/o', 'c/t', 1, 1, 0, 'old', 1, 123);",
+        )
+        .unwrap();
+
+    db::migrate(&mut connection).unwrap();
+    db::migrate(&mut connection).unwrap();
+
+    let district: (Option<String>, String, String) = connection
+        .query_row(
+            "SELECT url, description_json, name FROM districts WHERE id = 'uyezd-1897-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        district,
+        (None, String::new(), "Скопинский уезд".to_string())
+    );
+    let mut statement = connection
+        .prepare(
+            "SELECT id, post_id, province_id, settlement_id, district_id, attached_ms
+             FROM post_images ORDER BY id",
+        )
+        .unwrap();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0], ("cleanup-image".into(), None, None, None, None, Some(123)));
+    assert_eq!(
+        rows[1],
+        (
+            "post-image".into(),
+            Some("post".into()),
+            None,
+            None,
+            None,
+            Some(2)
+        )
+    );
+    assert_eq!(
+        rows[2],
+        (
+            "province-image".into(),
+            None,
+            Some("ryazan".into()),
+            None,
+            None,
+            Some(2)
+        )
+    );
+    assert_eq!(
+        rows[3],
+        (
+            "settlement-image".into(),
+            None,
+            None,
+            Some("settlement".into()),
+            None,
+            Some(2)
+        )
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM posts", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM settlements", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn district_name_migration_preserves_v7_editorial_data_and_gallery() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut connection = db::open_database(&dir.path().join("v7.sqlite")).unwrap();
+    for migration in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_districts.sql"),
+        "ALTER TABLE provinces RENAME COLUMN description TO description_json;",
+        include_str!("../migrations/0004_post_images.sql"),
+        include_str!("../migrations/0005_entity_images.sql"),
+        include_str!("../migrations/0006_post_author.sql"),
+        include_str!("../migrations/0007_district_pages.sql"),
+    ] {
+        connection.execute_batch(migration).unwrap();
+    }
+    connection.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+         INSERT INTO schema_migrations VALUES
+           (1, 'old'), (2, 'old'), (3, 'old'), (4, 'old'), (5, 'old'), (6, 'old'), (7, 'old');
+         INSERT INTO provinces (id, published, slug) VALUES ('ryazan', 1, 'ryazanskaya');
+         INSERT INTO districts (id, province_id, name, position, url, description_json)
+           VALUES ('uyezd-1897-1', 'ryazan', 'Скопинский уезд', 17, '/uezd/custom', '{\"saved\":true}');
+         INSERT INTO post_images
+           (id, district_id, original_key, thumbnail_key, width, height, position, created_at, created_ms, attached_ms)
+           VALUES ('district-image', 'uyezd-1897-1', 'd/o', 'd/t', 800, 600, 3, 'old', 1, 123);",
+    ).unwrap();
+    db::migrate(&mut connection).unwrap();
+    db::migrate(&mut connection).unwrap();
+    let district: (String, String, i64, Option<String>, String, Option<String>) = connection
+        .query_row(
+            "SELECT province_id, name, position, url, description_json, display_name
+             FROM districts WHERE id = 'uyezd-1897-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        ).unwrap();
+    assert_eq!(district, (
+        "ryazan".into(), "Скопинский уезд".into(), 17, Some("/uezd/custom".into()),
+        "{\"saved\":true}".into(), None,
+    ));
+    let image: (String, String, String, i64, i64) = connection.query_row(
+        "SELECT district_id, original_key, thumbnail_key, position, attached_ms
+         FROM post_images WHERE id = 'district-image'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).unwrap();
+    assert_eq!(image, ("uyezd-1897-1".into(), "d/o".into(), "d/t".into(), 3, 123));
+    connection.execute(
+        "UPDATE districts SET display_name = 'Новое название' WHERE id = 'uyezd-1897-1'", [],
+    ).unwrap();
+    db::migrate(&mut connection).unwrap();
+    let effective: String = connection.query_row(
+        "SELECT COALESCE(display_name, name) FROM districts WHERE id = 'uyezd-1897-1'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(effective, "Новое название");
 }

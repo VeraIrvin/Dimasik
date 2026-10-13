@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
-import type { PublishedOption, Settlement } from "@/lib/gubernia-publications";
+import type { DistrictOption, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import ProvincePostEditor from "./ProvincePostEditor";
 import SettlementEditor from "./SettlementEditor";
 import styles from "./AdminCreationPanel.module.css";
@@ -9,11 +9,14 @@ import styles from "./AdminCreationPanel.module.css";
 type AdminCreationPanelProps = {
   guberniaId: string;
   provinces: PublishedOption[];
+  districts: DistrictOption[];
   settlements: Settlement[];
   categories: string[];
   settlementTypes: string[];
   /** Preselects the settlement for a new post, e.g. on a settlement page. */
   defaultSettlementId?: string;
+  /** Preselects a district for new posts and settlements when no settlement default applies. */
+  defaultUyezdId?: string;
 };
 
 type ActiveEditor = "post" | "settlement";
@@ -21,10 +24,12 @@ type ActiveEditor = "post" | "settlement";
 export default function AdminCreationPanel({
   guberniaId,
   provinces,
+  districts,
   settlements,
   categories,
   settlementTypes,
   defaultSettlementId,
+  defaultUyezdId,
 }: AdminCreationPanelProps) {
   const editorPanelId = useId();
   const [active, setActive] = useState<ActiveEditor | null>(null);
@@ -62,16 +67,20 @@ export default function AdminCreationPanel({
           <ProvincePostEditor
             guberniaId={guberniaId}
             provinces={provinces}
+            districts={districts}
             settlements={settlements}
             categories={categories}
             defaultSettlementId={defaultSettlementId}
+            defaultUyezdId={defaultUyezdId}
             onDone={() => setActive(null)}
           />
         ) : active === "settlement" ? (
           <SettlementEditor
             guberniaId={guberniaId}
             provinces={provinces}
+            districts={districts}
             settlementTypes={settlementTypes}
+            defaultUyezdId={defaultUyezdId}
             onDone={() => setActive(null)}
           />
         ) : null}

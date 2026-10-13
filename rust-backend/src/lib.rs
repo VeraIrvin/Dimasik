@@ -128,6 +128,14 @@ pub fn build_router(state: AppState) -> Router {
             "/api/gubernias/{id}",
             patch(routes::gubernia_patch).delete(routes::gubernia_delete),
         )
+        .route(
+            "/api/gubernias/{id}/districts",
+            get(routes::districts_get),
+        )
+        .route(
+            "/api/gubernias/{id}/districts/{district_id}",
+            patch(routes::district_patch),
+        )
         .route("/api/posts/search", get(routes::posts_search))
         .route("/api/gubernias/{id}/posts", post(routes::post_create))
         .route(
@@ -170,6 +178,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/internal/session", get(routes::internal_session))
         .route("/internal/geo", get(routes::internal_geo))
         .route("/internal/gubernia/{slug}", get(routes::internal_gubernia))
+        .route("/internal/district/{slug}", get(routes::internal_district))
         .route(
             "/internal/settlement/{slug}",
             get(routes::internal_settlement),

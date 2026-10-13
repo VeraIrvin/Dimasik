@@ -1,5 +1,5 @@
-/* Province-page map: floating district list over the map, same overlay
-   language as the homepage map (GuberniasMap.module.css). */
+/* Province and district maps share floating geographic lists, using the same
+   overlay language as the homepage map (GuberniasMap.module.css). */
 .shell {
   position: relative;
   isolation: isolate;
@@ -92,7 +92,7 @@
   color: var(--muted, #75736c);
 }
 
-/* Restores the province-wide extent and clears the selection. */
+/* Restores the full geographic scope and clears settlement/district focus. */
 .provinceButton {
   flex: none;
   display: inline-flex;
@@ -141,6 +141,13 @@
   padding: 0;
   overflow-y: auto;
   list-style: none;
+}
+
+.emptyMessage {
+  padding: 7px 8px 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted, #75736c);
 }
 
 /* Mouse hover and keyboard focus resolve to one shared hover state. */

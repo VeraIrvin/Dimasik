@@ -7,7 +7,6 @@ import { getPublishedGeoData, getPublishedSettlementBySlug } from "@/lib/guberni
 import { normalizePostHighlightQuery } from "@/lib/post-search-highlight";
 import { getSettlementReference } from "@/lib/settlement-reference";
 import { getSiteSettings } from "@/lib/site-settings";
-import { getUyezd } from "@/lib/uyezd-data";
 import SettlementReferenceEditor from "./SettlementReferenceEditor";
 import SettlementPostExplorer from "./SettlementPostExplorer";
 import styles from "./page.module.css";
@@ -40,9 +39,8 @@ export default async function SettlementPage({
   }
 
   const { settlement, gubernia } = published;
-  // Districts may not be generated for every province; the row is simply omitted then.
-  const [uyeza, reference, geoData, isAdmin, settings] = await Promise.all([
-    getUyezd(gubernia.id, settlement.uyezdId),
+  const district = gubernia.districts.find((option) => option.id === settlement.uyezdId) ?? null;
+  const [reference, geoData, isAdmin, settings] = await Promise.all([
     getSettlementReference(settlement.id),
     getPublishedGeoData(),
     hasAdminSession(),
@@ -51,14 +49,18 @@ export default async function SettlementPage({
 
   // Placement validation forces a post's uyezd to match its settlement, so the
   // settlement district is the only name the feed can need.
-  const districtNames: Record<string, string> = uyeza ? { [uyeza.id]: uyeza.name } : {};
+  const districtNames: Record<string, string> = district
+    ? { [district.id]: district.name }
+    : {};
   const posts = gubernia.posts.filter((post) => post.settlementId === settlement.id);
   const hasPosts = posts.length > 0;
   const backHref = from === "settlements"
     ? "/?view=settlements"
     : from === "province"
       ? `/guberniya/${encodeURIComponent(gubernia.slug)}#province-map`
-      : "/";
+      : from === "district" && district
+        ? `${district.url}#district-map`
+        : "/";
 
   return (
     <>
@@ -84,10 +86,14 @@ export default async function SettlementPage({
               <dd className={styles.detailValue}>{settlement.type}</dd>
             </div>
           ) : null}
-          {uyeza ? (
+          {district ? (
             <div className={styles.detail}>
               <dt className={styles.detailLabel}>Уезд</dt>
-              <dd className={styles.detailValue}>{uyeza.name}</dd>
+              <dd className={styles.detailValue}>
+                <Link className={styles.provinceLink} href={district.url}>
+                  {district.name}
+                </Link>
+              </dd>
             </div>
           ) : null}
           <div className={styles.detail}>
@@ -138,6 +144,7 @@ export default async function SettlementPage({
             <AdminCreationPanel
               guberniaId={gubernia.id}
               provinces={geoData.provinces}
+              districts={gubernia.districts}
               settlements={geoData.settlements}
               categories={settings.categories}
               settlementTypes={settings.settlementTypes}
@@ -151,6 +158,7 @@ export default async function SettlementPage({
             posts={posts}
             guberniaId={gubernia.id}
             provinces={geoData.provinces}
+            districts={gubernia.districts}
             settlements={geoData.settlements}
             categories={settings.categories}
             districtNames={districtNames}

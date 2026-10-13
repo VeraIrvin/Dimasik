@@ -8,7 +8,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useRouter } from "next/navigation";
-import type { PublishedOption } from "@/lib/gubernia-publications";
+import type { DistrictOption, PublishedOption } from "@/lib/gubernia-publications";
 import {
   SETTLEMENT_URL_PREFIX,
   SETTLEMENT_URL_SLUG_MAX_LENGTH,
@@ -23,8 +23,12 @@ const NAME_MAX_LENGTH = 200;
 type SettlementEditorProps = {
   guberniaId: string;
   provinces: PublishedOption[];
+  /** Current server catalogue for the page's province; refreshes preserve the draft. */
+  districts?: DistrictOption[];
   /** Types configured in the admin settings; the required choice is sent as `type`. */
   settlementTypes: string[];
+  /** District preselected for a new settlement in the current province. */
+  defaultUyezdId?: string;
   /** Called once the editor is finished: the settlement was saved or editing stopped. */
   onDone?: () => void;
   /** Drops the section chrome for dialog embedding; the province page keeps the default. */
@@ -53,7 +57,9 @@ function parseCoordinates(raw: string): Coordinates | null {
 export default function SettlementEditor({
   guberniaId,
   provinces,
+  districts: currentDistricts,
   settlementTypes,
+  defaultUyezdId,
   onDone,
   compact,
 }: SettlementEditorProps) {
@@ -68,7 +74,7 @@ export default function SettlementEditor({
 
   const [name, setName] = useState("");
   const [selectedProvinceId, setSelectedProvinceId] = useState(guberniaId);
-  const [selectedDistrictId, setSelectedDistrictId] = useState("");
+  const [selectedDistrictId, setSelectedDistrictId] = useState(defaultUyezdId ?? "");
   const [typeValue, setTypeValue] = useState("");
   const [coordinates, setCoordinates] = useState("");
   const [slug, setSlug] = useState("");
@@ -83,13 +89,13 @@ export default function SettlementEditor({
   const coordinatesRef = useRef<HTMLInputElement>(null);
 
   const { districts, loading: districtsLoading, error: districtsError } =
-    useDistrictOptions(selectedProvinceId);
+    useDistrictOptions(selectedProvinceId, guberniaId, currentDistricts);
 
   function resetDraft() {
     setName("");
     setSlug("");
     setSelectedProvinceId(guberniaId);
-    setSelectedDistrictId("");
+    setSelectedDistrictId(defaultUyezdId ?? "");
     setTypeValue("");
     setCoordinates("");
   }

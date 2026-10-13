@@ -7,6 +7,7 @@ use time::OffsetDateTime;
 
 pub const MAX_SLUG_LENGTH: usize = 100;
 pub const SETTLEMENT_URL_PREFIX: &str = "/naselennyy-punkt/";
+pub const DISTRICT_URL_PREFIX: &str = "/uezd/";
 
 /// JavaScript string length in UTF-16 code units, used for every bound that
 /// the TypeScript stores compared with `value.length`.
@@ -128,6 +129,19 @@ pub fn is_valid_settlement_url(value: &str) -> bool {
     value
         .strip_prefix(SETTLEMENT_URL_PREFIX)
         .is_some_and(is_valid_slug)
+}
+
+pub fn is_valid_district_url(value: &str) -> bool {
+    value
+        .strip_prefix(DISTRICT_URL_PREFIX)
+        .is_some_and(is_valid_slug)
+}
+
+pub fn effective_district_url(url: Option<&str>, district_id: &str) -> String {
+    match url {
+        Some(url) => url.to_string(),
+        None => format!("{DISTRICT_URL_PREFIX}{district_id}"),
+    }
 }
 
 /// Stored settlements may omit their page address; the legacy derivation keeps

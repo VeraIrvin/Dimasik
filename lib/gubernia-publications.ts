@@ -10,6 +10,14 @@ export type PublishedOption = {
   slug: string;
 };
 
+/** Canonical historical district with its current public page address. */
+export type DistrictOption = {
+  id: string;
+  name: string;
+  guberniaId: string;
+  url: string;
+};
+
 export type Settlement = {
   id: string;
   name: string;
@@ -23,7 +31,7 @@ export type Settlement = {
   type: string | null;
 };
 
-/** Image metadata shared by posts, province references, and settlement references. */
+/** Image metadata shared by posts and province, district, and settlement references. */
 export type PostImage = {
   id: string;
   width: number;
@@ -59,6 +67,21 @@ export type PublishedGubernia = {
   description: PostDocument | null;
   /** Reference images in display order; always an array, empty when there are none. */
   images: PostImage[];
+  posts: GuberniaPost[];
+  settlements: Settlement[];
+  districts: DistrictOption[];
+};
+
+/** A district page contains only this district's posts and settlements. */
+export type PublishedDistrict = {
+  id: string;
+  name: string;
+  guberniaId: string;
+  url: string;
+  description: PostDocument | null;
+  images: PostImage[];
+  /** Parent metadata supplies fresh placement choices without foreign post content. */
+  gubernia: PublishedOption & { districts: DistrictOption[] };
   posts: GuberniaPost[];
   settlements: Settlement[];
 };
@@ -97,6 +120,11 @@ export async function getPublishedGuberniaBySlug(slug: string): Promise<Publishe
     `/internal/gubernia/${encodeURIComponent(slug)}`,
   );
   return gubernia ? normalizePublishedGubernia(gubernia) : null;
+}
+
+/** Every historical district of a published province has a current public page. */
+export function getPublishedDistrictBySlug(slug: string): Promise<PublishedDistrict | null> {
+  return readBackendJson<PublishedDistrict>(`/internal/district/${encodeURIComponent(slug)}`);
 }
 
 /** Resolves a settlement page slug, including legacy UUID addresses, or null. */

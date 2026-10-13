@@ -45,7 +45,9 @@ function isNullableString(value: unknown): value is string | null {
 
 function isSafePostHref(value: string): boolean {
   return (
-    (value.startsWith('/guberniya/') || value.startsWith('/naselennyy-punkt/')) &&
+    (value.startsWith('/guberniya/') ||
+      value.startsWith('/naselennyy-punkt/') ||
+      value.startsWith('/uezd/')) &&
     !value.startsWith('//') &&
     /^\/[^?#]+#post-[^?#]+$/u.test(value)
   );

@@ -1,0 +1,120 @@
+.page {
+  width: min(1160px, calc(100% - 64px));
+  margin: clamp(48px, 9vh, 100px) auto 104px;
+}
+
+.header {
+  margin-bottom: 20px;
+}
+
+.back {
+  margin-top: 0;
+}
+
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.breadcrumbs a {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.breadcrumbs a:hover,
+.breadcrumbs a:focus-visible {
+  color: var(--accent);
+}
+
+.eyebrow {
+  margin: 18px 0 0;
+}
+
+.title {
+  max-width: 800px;
+  margin: 20px 0 0;
+}
+
+.adminSettings,
+.composer,
+.reference {
+  max-width: 800px;
+}
+
+.composer {
+  margin-bottom: 52px;
+}
+
+.reference {
+  margin: 0 0 48px;
+}
+
+.referenceHeading {
+  margin: 0 0 20px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.districtMap {
+  margin-top: 0;
+  scroll-margin-top: 100px;
+}
+
+.filters {
+  margin-bottom: 36px;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.withPosts .composer {
+  margin-left: 266px;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .withPosts .composer {
+    margin-left: 216px;
+  }
+
+  .districtMap {
+    scroll-margin-top: 160px;
+  }
+}
+
+@media (max-width: 700px) {
+  .page {
+    width: min(100% - 36px, 760px);
+    margin: 38px auto 72px;
+  }
+
+  .header {
+    margin-bottom: 32px;
+  }
+
+  .withPosts .composer {
+    margin-left: 0;
+  }
+
+  .districtMap {
+    scroll-margin-top: 220px;
+  }
+}

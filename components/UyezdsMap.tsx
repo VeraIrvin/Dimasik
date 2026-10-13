@@ -11,7 +11,7 @@ import type {
 } from 'maplibre-gl';
 import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon } from 'geojson';
 import type { Settlement } from '../lib/gubernia-publications';
-import { districtLabelCollection } from '../lib/district-labels';
+import { districtLabelCollection, type LabelCollection as DistrictLabelCollection } from '../lib/district-labels';
 import styles from './UyezdsMap.module.css';
 
 // Keep the worker version and local serving convention aligned with the main map.
@@ -47,7 +47,12 @@ type Bounds = [number, number, number, number];
 type LoadStatus = 'loading' | 'ready' | 'error';
 type HoverOrigin = 'list' | 'map';
 type ProvinceProperties = { kind: 'province'; id: string; name: string };
-type DistrictProperties = { kind: 'district'; id: string; name: string; provinceId: string };
+type DistrictProperties = {
+  kind: 'district';
+  id: string;
+  name: string;
+  provinceId: string;
+};
 type ProvinceFeature = Feature<Polygon | MultiPolygon, ProvinceProperties>;
 type DistrictFeature = Feature<Polygon | MultiPolygon, DistrictProperties>;
 type UyezdsCollection = FeatureCollection<
@@ -57,16 +62,19 @@ type UyezdsCollection = FeatureCollection<
 type DistrictEntry = { id: string; name: string; bounds: Bounds };
 type SettlementProperties = { id: string; name: string; uyezdId: string };
 type SettlementCollection = FeatureCollection<Point, SettlementProperties>;
+type DistrictNames = Record<string, string>;
 
 type UyezdsMapProps = {
   guberniaId: string;
   guberniaName: string;
   settlements: Settlement[];
+  districtNames: DistrictNames;
+  scopeDistrictId?: string;
   selectedDistrictId: string | null;
   selectedSettlementId: string | null;
   onDistrictSelect: (id: string | null) => void;
+  onDistrictOpen?: (id: string) => void;
   onSettlementOpen: (id: string) => void;
-  onDistrictsLoad?: (districts: { id: string; name: string }[]) => void;
 };
 
 function geometryBounds(geometry: Polygon | MultiPolygon, label: string): Bounds {
@@ -202,6 +210,54 @@ function parseCollection(
   };
 }
 
+function applyDistrictNames(
+  collection: UyezdsCollection,
+  districtNames: DistrictNames,
+): UyezdsCollection {
+  return {
+    type: 'FeatureCollection',
+    features: collection.features.map((feature) =>
+      feature.properties.kind === 'district' && districtNames[feature.properties.id] !== undefined
+        ? {
+            ...feature,
+            properties: {
+              ...feature.properties,
+              name: districtNames[feature.properties.id],
+            },
+          }
+        : feature,
+    ),
+  };
+}
+
+function applyDistrictEntryNames(
+  districts: DistrictEntry[],
+  districtNames: DistrictNames,
+): DistrictEntry[] {
+  return districts
+    .map((district) => ({
+      ...district,
+      name: districtNames[district.id] ?? district.name,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, 'ru'));
+}
+
+function applyDistrictLabelNames(
+  labels: DistrictLabelCollection,
+  districtNames: DistrictNames,
+): DistrictLabelCollection {
+  return {
+    type: 'FeatureCollection',
+    features: labels.features.map((feature) => ({
+      ...feature,
+      properties: {
+        ...feature.properties,
+        name: districtNames[feature.properties.id] ?? feature.properties.name,
+      },
+    })),
+  };
+}
+
 function expandedMaxBounds([west, south, east, north]: Bounds): LngLatBoundsLike {
   // Give fitBounds enough room to zoom out on tall, narrow provinces even when
   // the floating list consumes much of a short viewport.
@@ -215,7 +271,7 @@ function expandedMaxBounds([west, south, east, north]: Bounds): LngLatBoundsLike
 
 function fitPadding(width: number) {
   if (width <= 600) return { top: 152, right: 16, bottom: 24, left: 16 };
-  if (width <= 900) return { top: 36, right: 36, bottom: 44, left: 254 };
+  if (width <= 900) return { top: 36, right: 36, bottom: 44, left: 278 };
   return { top: 44, right: 44, bottom: 52, left: 286 };
 }
 
@@ -223,7 +279,10 @@ function fitPadding(width: number) {
 // fits the viewport at a different zoom depending on its size and on the viewport, so this
 // mirrors the zoom `fitBounds(provinceBounds)` reaches instead of assuming one number fits
 // every province, and demands a clear zoom step past that overview.
-function settlementRevealZoom(map: MapLibreMap, provinceBounds: Bounds | null): number {
+function settlementRevealZoom(
+  map: MapLibreMap,
+  provinceBounds: Bounds | null,
+): number {
   const maxZoom = map.getMaxZoom();
   const readableZoom = Math.min(SETTLEMENT_READABLE_MIN_ZOOM, maxZoom);
   if (provinceBounds === null) return readableZoom;
@@ -246,7 +305,7 @@ function setFeatureState(
   map: MapLibreMap,
   source: string,
   id: string,
-  state: 'hover' | 'selected',
+  state: 'hover' | 'selected' | 'populated',
   value: boolean,
 ) {
   if (!map.getSource(source)) return;
@@ -272,21 +331,28 @@ function settlementCollection(settlements: Settlement[]): SettlementCollection {
   };
 }
 
-function addSourceAndLayers(map: MapLibreMap, collection: UyezdsCollection) {
+function addSourceAndLayers(
+  map: MapLibreMap,
+  collection: UyezdsCollection,
+  districtLabels: DistrictLabelCollection,
+  showProvinceBackdrop: boolean,
+) {
   map.addSource(SOURCE_ID, { type: 'geojson', data: collection, promoteId: 'id' });
   // Polygon labels are placed once per rendered tile; one point per district
   // prevents the same name from recurring as the user zooms in.
   map.addSource(DISTRICT_LABEL_SOURCE_ID, {
     type: 'geojson',
-    data: districtLabelCollection(collection.features.slice(1) as DistrictFeature[]),
+    data: districtLabels,
   });
-  map.addLayer({
-    id: PROVINCE_FILL_LAYER_ID,
-    type: 'fill',
-    source: SOURCE_ID,
-    filter: ['==', ['get', 'kind'], 'province'],
-    paint: { 'fill-color': '#eee9dd', 'fill-opacity': 0.92 },
-  });
+  if (showProvinceBackdrop) {
+    map.addLayer({
+      id: PROVINCE_FILL_LAYER_ID,
+      type: 'fill',
+      source: SOURCE_ID,
+      filter: ['==', ['get', 'kind'], 'province'],
+      paint: { 'fill-color': '#eee9dd', 'fill-opacity': 0.92 },
+    });
+  }
   map.addLayer({
     id: DISTRICT_FILL_LAYER_ID,
     type: 'fill',
@@ -295,11 +361,23 @@ function addSourceAndLayers(map: MapLibreMap, collection: UyezdsCollection) {
     paint: {
       'fill-color': [
         'case',
-        ['boolean', ['feature-state', 'selected'], false],
-        '#d4bd86',
-        ['boolean', ['feature-state', 'hover'], false],
-        '#e1cfa5',
-        '#e9dfc8',
+        ['boolean', ['feature-state', 'populated'], false],
+        [
+          'case',
+          ['boolean', ['feature-state', 'selected'], false],
+          '#d4bd86',
+          ['boolean', ['feature-state', 'hover'], false],
+          '#e1cfa5',
+          '#e9dfc8',
+        ],
+        [
+          'case',
+          ['boolean', ['feature-state', 'selected'], false],
+          '#e3dccb',
+          ['boolean', ['feature-state', 'hover'], false],
+          '#ebe5d8',
+          '#f2efe8',
+        ],
       ],
       'fill-opacity': 0.86,
       'fill-color-transition': { duration: 140, delay: 0 },
@@ -332,13 +410,15 @@ function addSourceAndLayers(map: MapLibreMap, collection: UyezdsCollection) {
       'line-width-transition': { duration: 140, delay: 0 },
     },
   });
-  map.addLayer({
-    id: PROVINCE_OUTLINE_LAYER_ID,
-    type: 'line',
-    source: SOURCE_ID,
-    filter: ['==', ['get', 'kind'], 'province'],
-    paint: { 'line-color': '#665f52', 'line-width': 2.2, 'line-opacity': 0.95 },
-  });
+  if (showProvinceBackdrop) {
+    map.addLayer({
+      id: PROVINCE_OUTLINE_LAYER_ID,
+      type: 'line',
+      source: SOURCE_ID,
+      filter: ['==', ['get', 'kind'], 'province'],
+      paint: { 'line-color': '#665f52', 'line-width': 2.2, 'line-opacity': 0.95 },
+    });
+  }
   map.addLayer({
     id: DISTRICT_LABEL_LAYER_ID,
     type: 'symbol',
@@ -433,16 +513,21 @@ export default function UyezdsMap({
   guberniaId,
   guberniaName,
   settlements,
+  districtNames,
+  scopeDistrictId,
   selectedDistrictId,
   selectedSettlementId,
   onDistrictSelect,
+  onDistrictOpen,
   onSettlementOpen,
-  onDistrictsLoad,
 }: UyezdsMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const provinceBoundsRef = useRef<Bounds | null>(null);
   const districtBoundsRef = useRef<Map<string, Bounds>>(new Map());
+  const canonicalCollectionRef = useRef<UyezdsCollection | null>(null);
+  const canonicalLabelsRef = useRef<DistrictLabelCollection | null>(null);
+  const canonicalDistrictsRef = useRef<DistrictEntry[]>([]);
   const districtIdsRef = useRef<Set<string>>(new Set());
   const settlementIdsRef = useRef<Set<string>>(new Set());
   const hoveredIdRef = useRef<string | null>(null);
@@ -455,14 +540,22 @@ export default function UyezdsMap({
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [status, setStatus] = useState<LoadStatus>('loading');
   const [errorMessage, setErrorMessage] = useState('');
+  const mapSettlements = useMemo(
+    () =>
+      scopeDistrictId === undefined
+        ? settlements
+        : settlements.filter((settlement) => settlement.uyezdId === scopeDistrictId),
+    [scopeDistrictId, settlements],
+  );
 
   // The map instance outlives single renders, so its long-lived event handlers
   // read the freshest props and callbacks through this ref.
   const latestRef = useRef({
     onDistrictSelect,
+    onDistrictOpen,
     onSettlementOpen,
-    onDistrictsLoad,
-    settlements,
+    settlements: mapSettlements,
+    districtNames,
     selectedDistrictId,
     selectedSettlementId,
   });
@@ -470,15 +563,16 @@ export default function UyezdsMap({
   useEffect(() => {
     latestRef.current = {
       onDistrictSelect,
+      onDistrictOpen,
       onSettlementOpen,
-      onDistrictsLoad,
-      settlements,
+      settlements: mapSettlements,
+      districtNames,
       selectedDistrictId,
       selectedSettlementId,
     };
   });
 
-  const settlementData = useMemo(() => settlementCollection(settlements), [settlements]);
+  const settlementData = useMemo(() => settlementCollection(mapSettlements), [mapSettlements]);
 
   const fitBounds = useCallback((bounds: Bounds, animated: boolean, maxZoom?: number) => {
     const map = mapRef.current;
@@ -537,6 +631,7 @@ export default function UyezdsMap({
       return;
     }
     const visible =
+      scopeDistrictId !== undefined ||
       latestRef.current.selectedDistrictId !== null ||
       latestRef.current.selectedSettlementId !== null ||
       map.getZoom() >= settlementRevealZoom(map, provinceBoundsRef.current);
@@ -551,17 +646,21 @@ export default function UyezdsMap({
       setSettlementHover(null);
       map.getCanvas().style.cursor = hoveredIdRef.current === null ? '' : 'pointer';
     }
-  }, [setSettlementHover]);
+  }, [scopeDistrictId, setSettlementHover]);
 
   // Controlled selection: selection and hover props repaint feature states.
   const syncFeatureStates = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
+    const populatedDistrictIds = new Set(
+      latestRef.current.settlements.map((settlement) => settlement.uyezdId),
+    );
     const districtId = latestRef.current.selectedDistrictId;
     const hoveredDistrictId = hoveredIdRef.current;
     for (const id of districtIdsRef.current) {
       setFeatureState(map, SOURCE_ID, id, 'selected', id === districtId);
       setFeatureState(map, SOURCE_ID, id, 'hover', id === hoveredDistrictId);
+      setFeatureState(map, SOURCE_ID, id, 'populated', populatedDistrictIds.has(id));
     }
     const settlementId = latestRef.current.selectedSettlementId;
     const hoveredSettlementId = hoveredSettlementIdRef.current;
@@ -589,13 +688,15 @@ export default function UyezdsMap({
     const settlement =
       selectedSettlementId === null
         ? null
-        : (settlements.find((entry) => entry.id === selectedSettlementId) ?? null);
+        : (mapSettlements.find((entry) => entry.id === selectedSettlementId) ?? null);
     const viewKey =
       settlement !== null
         ? `settlement:${settlement.id}:${settlement.longitude},${settlement.latitude}`
         : selectedDistrictId !== null && districtBoundsRef.current.has(selectedDistrictId)
           ? `district:${selectedDistrictId}`
-          : 'province';
+          : scopeDistrictId === undefined
+            ? 'province'
+            : `district-scope:${scopeDistrictId}`;
     if (appliedViewRef.current === viewKey) return;
     appliedViewRef.current = viewKey;
     if (settlement !== null) {
@@ -613,8 +714,9 @@ export default function UyezdsMap({
     focusSettlement,
     selectedDistrictId,
     selectedSettlementId,
-    settlements,
+    mapSettlements,
     status,
+    scopeDistrictId,
     syncFeatureStates,
     syncSettlementVisibility,
   ]);
@@ -627,7 +729,7 @@ export default function UyezdsMap({
     const source = map?.getSource(SETTLEMENT_SOURCE_ID) as GeoJSONSource | undefined;
     if (!map || !source) return;
     source.setData(settlementData);
-    settlementIdsRef.current = new Set(settlements.map((entry) => entry.id));
+    settlementIdsRef.current = new Set(mapSettlements.map((entry) => entry.id));
     if (
       hoveredSettlementIdRef.current !== null &&
       !settlementIdsRef.current.has(hoveredSettlementIdRef.current)
@@ -635,7 +737,34 @@ export default function UyezdsMap({
       hoveredSettlementIdRef.current = null;
     }
     syncFeatureStates();
-  }, [settlementData, settlements, status, syncFeatureStates]);
+  }, [mapSettlements, settlementData, status, syncFeatureStates]);
+
+  // Editorial district names can change after router.refresh(); update both map
+  // sources and the sidebar without rebuilding the MapLibre instance.
+  useEffect(() => {
+    if (status !== 'ready') return;
+    const map = mapRef.current;
+    const canonicalCollection = canonicalCollectionRef.current;
+    const canonicalLabels = canonicalLabelsRef.current;
+    if (!map || !canonicalCollection || !canonicalLabels) return;
+
+    const namedCollection = applyDistrictNames(canonicalCollection, districtNames);
+    const polygonSource = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
+    const labelSource = map.getSource(DISTRICT_LABEL_SOURCE_ID) as GeoJSONSource | undefined;
+    polygonSource?.setData(namedCollection);
+    labelSource?.setData(applyDistrictLabelNames(canonicalLabels, districtNames));
+
+    const namedDistricts = applyDistrictEntryNames(canonicalDistrictsRef.current, districtNames);
+    setDistricts(namedDistricts);
+    const canvas = map.getCanvas();
+    canvas.setAttribute(
+      'aria-label',
+      scopeDistrictId === undefined
+        ? `Карта уездов: ${guberniaName}, 1897 год`
+        : `Карта уезда: ${namedDistricts[0]?.name ?? guberniaName}, 1897 год`,
+    );
+    syncFeatureStates();
+  }, [districtNames, guberniaName, scopeDistrictId, status, syncFeatureStates]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -652,6 +781,9 @@ export default function UyezdsMap({
     appliedViewRef.current = null;
     provinceBoundsRef.current = null;
     districtBoundsRef.current = new Map();
+    canonicalCollectionRef.current = null;
+    canonicalLabelsRef.current = null;
+    canonicalDistrictsRef.current = [];
     districtIdsRef.current = new Set();
     settlementIdsRef.current = new Set();
     settlementLayersVisibleRef.current = null;
@@ -670,27 +802,63 @@ export default function UyezdsMap({
         if (disposed || !container) return;
 
         const provinceBounds = geometryBounds(parsed.province.geometry, 'Граница губернии');
-        provinceBoundsRef.current = provinceBounds;
+        const scopedDistrict = scopeDistrictId === undefined
+          ? null
+          : parsed.districts.find((district) => district.id === scopeDistrictId);
+        if (scopeDistrictId !== undefined && !scopedDistrict) {
+          throw new Error('Указанный уезд отсутствует в границах этой губернии.');
+        }
+        const canonicalVisibleDistricts = scopedDistrict ? [scopedDistrict] : parsed.districts;
+        const canonicalCollection: UyezdsCollection = scopeDistrictId === undefined
+          ? parsed.collection
+          : {
+              type: 'FeatureCollection',
+              features: parsed.collection.features.filter(
+                (feature) =>
+                  feature.properties.kind === 'district' &&
+                  feature.properties.id === scopeDistrictId,
+              ),
+            };
+        const visibleDistricts = applyDistrictEntryNames(
+          canonicalVisibleDistricts,
+          latestRef.current.districtNames,
+        );
+        const collection = applyDistrictNames(
+          canonicalCollection,
+          latestRef.current.districtNames,
+        );
+        // Label anchors depend only on immutable geometry, not editorial names.
+        const canonicalLabels = districtLabelCollection(
+          canonicalCollection.features.filter(
+            (feature): feature is DistrictFeature => feature.properties.kind === 'district',
+          ),
+        );
+        const districtLabels = applyDistrictLabelNames(
+          canonicalLabels,
+          latestRef.current.districtNames,
+        );
+        canonicalCollectionRef.current = canonicalCollection;
+        canonicalLabelsRef.current = canonicalLabels;
+        canonicalDistrictsRef.current = canonicalVisibleDistricts;
+        const geographicBounds = scopedDistrict?.bounds ?? provinceBounds;
+        provinceBoundsRef.current = geographicBounds;
         districtBoundsRef.current = new Map(
-          parsed.districts.map((district) => [district.id, district.bounds]),
+          visibleDistricts.map((district) => [district.id, district.bounds]),
         );
-        districtIdsRef.current = new Set(parsed.districts.map((district) => district.id));
-        setDistricts(parsed.districts);
-        latestRef.current.onDistrictsLoad?.(
-          parsed.districts.map((district) => ({ id: district.id, name: district.name })),
-        );
+        districtIdsRef.current = new Set(visibleDistricts.map((district) => district.id));
+        setDistricts(visibleDistricts);
 
         const map = new maplibregl.Map({
           container,
           style: BASE_STYLE,
           center: [
-            (provinceBounds[0] + provinceBounds[2]) / 2,
-            (provinceBounds[1] + provinceBounds[3]) / 2,
+            (geographicBounds[0] + geographicBounds[2]) / 2,
+            (geographicBounds[1] + geographicBounds[3]) / 2,
           ],
           zoom: 5,
           minZoom: 2,
           maxZoom: 11,
-          maxBounds: expandedMaxBounds(provinceBounds),
+          maxBounds: expandedMaxBounds(geographicBounds),
           attributionControl: false,
           dragRotate: false,
           pitchWithRotate: false,
@@ -701,7 +869,12 @@ export default function UyezdsMap({
         map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 
         const canvas = map.getCanvas();
-        canvas.setAttribute('aria-label', `Карта уездов: ${guberniaName}, 1897 год`);
+        canvas.setAttribute(
+          'aria-label',
+          scopedDistrict
+            ? `Карта уезда: ${visibleDistricts[0].name}, 1897 год`
+            : `Карта уездов: ${guberniaName}, 1897 год`,
+        );
 
         const reportMapError = (event: unknown) => {
           if (disposed) return;
@@ -751,7 +924,7 @@ export default function UyezdsMap({
           updateCursor();
         };
         const handleMapClick = (event: MapLayerMouseEvent) => {
-          // A marker lies inside a polygon, so marker and label clicks must not select its district.
+          // A marker lies inside a polygon, so marker and label clicks must not open its district.
           const marks = map.queryRenderedFeatures(event.point, {
             layers: [SETTLEMENT_DOT_LAYER_ID, SETTLEMENT_LABEL_LAYER_ID],
           });
@@ -759,7 +932,7 @@ export default function UyezdsMap({
           const rawId = event.features?.[0]?.id;
           if (rawId === undefined || rawId === null) return;
           const id = String(rawId);
-          if (districtIdsRef.current.has(id)) latestRef.current.onDistrictSelect(id);
+          if (districtIdsRef.current.has(id)) latestRef.current.onDistrictOpen?.(id);
         };
         const clearHovers = () => {
           setHover(null, 'map');
@@ -770,7 +943,7 @@ export default function UyezdsMap({
         map.once('load', () => {
           if (disposed) return;
           try {
-            addSourceAndLayers(map, parsed.collection);
+            addSourceAndLayers(map, collection, districtLabels, scopeDistrictId === undefined);
             const settlementSource = map.getSource(SETTLEMENT_SOURCE_ID) as GeoJSONSource;
             const initialSettlements = latestRef.current.settlements;
             settlementIdsRef.current = new Set(initialSettlements.map((entry) => entry.id));
@@ -778,8 +951,8 @@ export default function UyezdsMap({
             syncSettlementVisibility();
             map.on('zoom', syncSettlementVisibility);
             syncFeatureStates();
-            fitBounds(provinceBounds, false);
-            appliedViewRef.current = 'province';
+            fitBounds(geographicBounds, false, scopedDistrict ? 9 : undefined);
+            appliedViewRef.current = scopedDistrict ? `district-scope:${scopedDistrict.id}` : 'province';
             map.on('mousemove', SETTLEMENT_DOT_LAYER_ID, handleSettlementMove);
             map.on('mouseleave', SETTLEMENT_DOT_LAYER_ID, clearSettlementHover);
             map.on('click', SETTLEMENT_DOT_LAYER_ID, handleSettlementClick);
@@ -819,7 +992,7 @@ export default function UyezdsMap({
           const selected = latestRef.current.selectedDistrictId;
           const bounds =
             selected !== null ? districtBoundsRef.current.get(selected) : provinceBoundsRef.current;
-          if (bounds) fitBounds(bounds, false, selected !== null ? 9 : undefined);
+          if (bounds) fitBounds(bounds, false, selected !== null || scopedDistrict ? 9 : undefined);
           // The reveal zoom follows the viewport, so a resize can change it without
           // changing the zoom level itself.
           syncSettlementVisibility();
@@ -845,6 +1018,7 @@ export default function UyezdsMap({
     focusSettlement,
     guberniaId,
     guberniaName,
+    scopeDistrictId,
     setHover,
     setSettlementHover,
     syncFeatureStates,
@@ -860,88 +1034,175 @@ export default function UyezdsMap({
     selectedDistrictId === null
       ? null
       : (districts.find((district) => district.id === selectedDistrictId)?.name ?? null);
+  const scopedSettlements = useMemo(
+    () =>
+      scopeDistrictId === undefined
+        ? []
+        : [...mapSettlements].sort((left, right) => left.name.localeCompare(right.name, 'ru')),
+    [mapSettlements, scopeDistrictId],
+  );
 
   return (
-    <section className={styles.shell} aria-label={`Историческая карта: ${guberniaName}`}>
+    <section
+      className={styles.shell}
+      aria-label={
+        scopeDistrictId === undefined
+          ? `Историческая карта: ${guberniaName}`
+          : `Историческая карта уезда: ${districts[0]?.name ?? guberniaName}`
+      }
+    >
       <div className={styles.viewport}>
         <div ref={containerRef} className={styles.map} />
 
-        <aside className={styles.panel} aria-label="Список уездов">
-          <div className={styles.panelHeading}>
-            <h2>ДОСТУПНЫЕ УЕЗДЫ</h2>
-            <button
-              className={styles.provinceButton}
-              type="button"
-              aria-label="Показать всю губернию"
-              title="Показать всю губернию"
-              aria-pressed={provinceSelected}
-              disabled={status !== 'ready'}
-              onClick={() => {
-                onDistrictSelect(null);
-                if (provinceBoundsRef.current) {
-                  appliedViewRef.current = 'province';
-                  fitBounds(provinceBoundsRef.current, true);
-                }
-              }}
-            >
-              <svg
-                aria-hidden="true"
-                focusable="false"
-                viewBox="0 0 16 16"
-                width="14"
-                height="14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+        {scopeDistrictId === undefined ? (
+          <aside className={styles.panel} aria-label="Список уездов">
+            <div className={styles.panelHeading}>
+              <h2>ДОСТУПНЫЕ УЕЗДЫ</h2>
+              <button
+                className={styles.provinceButton}
+                type="button"
+                aria-label="Показать всю губернию"
+                title="Показать всю губернию"
+                aria-pressed={provinceSelected}
+                disabled={status !== 'ready'}
+                onClick={() => {
+                  onDistrictSelect(null);
+                  if (provinceBoundsRef.current) {
+                    appliedViewRef.current = 'province';
+                    fitBounds(provinceBoundsRef.current, true);
+                  }
+                }}
               >
-                <path d="M6 1.75H3.25A1.5 1.5 0 0 0 1.75 3.25V6" />
-                <path d="M10 1.75h2.75a1.5 1.5 0 0 1 1.5 1.5V6" />
-                <path d="M6 14.25H3.25a1.5 1.5 0 0 1-1.5-1.5V10" />
-                <path d="M10 14.25h2.75a1.5 1.5 0 0 0 1.5-1.5V10" />
-                <circle cx="8" cy="8" r="1.9" fill="currentColor" stroke="none" />
-              </svg>
-            </button>
-          </div>
-          <ul className={styles.list} aria-busy={status === 'loading'}>
-            {districts.map((district) => {
-              const isHovered = hoveredId === district.id;
-              const isSelected = selectedDistrictId === district.id;
-              return (
-                <li key={district.id}>
-                  <button
-                    className={`${styles.districtButton} ${
-                      isHovered ? styles.districtButtonHovered : ''
-                    } ${isSelected ? styles.districtButtonSelected : ''}`}
-                    type="button"
-                    aria-pressed={isSelected}
-                    disabled={status !== 'ready'}
-                    onMouseEnter={() => setHover(district.id, 'list')}
-                    onMouseLeave={(event) => {
-                      if (event.currentTarget !== document.activeElement) setHover(null, 'list');
-                    }}
-                    onFocus={() => setHover(district.id, 'list')}
-                    onBlur={() => setHover(null, 'list')}
-                    onClick={() => onDistrictSelect(district.id)}
-                  >
-                    {district.name}
-                  </button>
+                <svg
+                  aria-hidden="true"
+                  focusable="false"
+                  viewBox="0 0 16 16"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M6 1.75H3.25A1.5 1.5 0 0 0 1.75 3.25V6" />
+                  <path d="M10 1.75h2.75a1.5 1.5 0 0 1 1.5 1.5V6" />
+                  <path d="M6 14.25H3.25a1.5 1.5 0 0 1-1.5-1.5V10" />
+                  <path d="M10 14.25h2.75a1.5 1.5 0 0 0 1.5-1.5V10" />
+                  <circle cx="8" cy="8" r="1.9" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+            </div>
+            <ul className={styles.list} aria-busy={status === 'loading'}>
+              {districts.map((district) => {
+                const isHovered = hoveredId === district.id;
+                return (
+                  <li key={district.id}>
+                    <button
+                      className={`${styles.districtButton} ${
+                        isHovered ? styles.districtButtonHovered : ''
+                      }`}
+                      type="button"
+                      disabled={status !== 'ready' || onDistrictOpen === undefined}
+                      onMouseEnter={() => setHover(district.id, 'list')}
+                      onMouseLeave={(event) => {
+                        if (event.currentTarget !== document.activeElement) setHover(null, 'list');
+                      }}
+                      onFocus={() => setHover(district.id, 'list')}
+                      onBlur={() => setHover(null, 'list')}
+                      onClick={() => onDistrictOpen?.(district.id)}
+                    >
+                      {district.name}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </aside>
+        ) : (
+          <aside className={styles.panel} aria-label="Список населённых пунктов уезда">
+            <div className={styles.panelHeading}>
+              <h2>НАСЕЛЁННЫЕ ПУНКТЫ</h2>
+              <button
+                className={styles.provinceButton}
+                type="button"
+                aria-label="Показать весь уезд"
+                title="Показать весь уезд"
+                aria-pressed={selectedSettlementId === null}
+                disabled={status !== 'ready'}
+                onClick={() => {
+                  onDistrictSelect(null);
+                  const bounds = districtBoundsRef.current.get(scopeDistrictId);
+                  if (bounds) {
+                    appliedViewRef.current = `district-scope:${scopeDistrictId}`;
+                    fitBounds(bounds, true, 9);
+                  }
+                }}
+              >
+                <svg
+                  aria-hidden="true"
+                  focusable="false"
+                  viewBox="0 0 16 16"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M6 1.75H3.25A1.5 1.5 0 0 0 1.75 3.25V6" />
+                  <path d="M10 1.75h2.75a1.5 1.5 0 0 1 1.5 1.5V6" />
+                  <path d="M6 14.25H3.25a1.5 1.5 0 0 1-1.5-1.5V10" />
+                  <path d="M10 14.25h2.75a1.5 1.5 0 0 0 1.5-1.5V10" />
+                  <circle cx="8" cy="8" r="1.9" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+            </div>
+            <ul className={styles.list} aria-busy={status === 'loading'}>
+              {scopedSettlements.length === 0 ? (
+                <li className={styles.emptyMessage}>
+                  В этом уезде пока нет населённых пунктов.
                 </li>
-              );
-            })}
-          </ul>
-        </aside>
+              ) : (
+                scopedSettlements.map((settlement) => (
+                  <li key={settlement.id}>
+                    <button
+                      className={`${styles.districtButton} ${
+                        selectedSettlementId === settlement.id
+                          ? styles.districtButtonSelected
+                          : ''
+                      }`}
+                      type="button"
+                      disabled={status !== 'ready'}
+                      onMouseEnter={() => setSettlementHover(settlement.id)}
+                      onMouseLeave={() => setSettlementHover(null)}
+                      onFocus={() => setSettlementHover(settlement.id)}
+                      onBlur={() => setSettlementHover(null)}
+                      onClick={() => onSettlementOpen(settlement.id)}
+                    >
+                      {settlement.name}
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+          </aside>
+        )}
 
         {status === 'loading' ? (
           <div className={styles.statePanel} role="status">
             <span className={styles.loader} aria-hidden="true" />
-            Загружаем границы уездов…
+            {scopeDistrictId === undefined
+              ? 'Загружаем границы уездов…'
+              : 'Загружаем границы уезда…'}
           </div>
         ) : null}
         {status === 'error' ? (
           <div className={styles.errorPanel} role="alert">
-            <strong>Карта уездов недоступна</strong>
+            <strong>
+              {scopeDistrictId === undefined ? 'Карта уездов недоступна' : 'Карта уезда недоступна'}
+            </strong>
             <span>{errorMessage}</span>
           </div>
         ) : null}
@@ -951,9 +1212,11 @@ export default function UyezdsMap({
         {status === 'ready'
           ? selectedSettlementName !== null
             ? `Выбран населённый пункт ${selectedSettlementName}.`
-            : selectedDistrictName !== null
-              ? `Выбран ${selectedDistrictName}.`
-              : `Показана вся губерния. Уездов: ${districts.length}, населённых пунктов: ${settlements.length}.`
+            : scopeDistrictId !== undefined
+              ? `Показан ${districts[0]?.name ?? 'уезд'}. Населённых пунктов: ${mapSettlements.length}.`
+              : selectedDistrictName !== null
+                ? `Выбран ${selectedDistrictName}.`
+                : `Показана вся губерния. Уездов: ${districts.length}, населённых пунктов: ${mapSettlements.length}.`
           : ''}
       </span>
     </section>

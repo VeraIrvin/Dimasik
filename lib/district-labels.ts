@@ -3,7 +3,7 @@ import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon, Position
 
 type NamedDistrict = Feature<Polygon | MultiPolygon, { id: string; name: string }>;
 
-type LabelCollection = FeatureCollection<Point, { id: string; name: string }>;
+export type LabelCollection = FeatureCollection<Point, { id: string; name: string }>;
 
 function ringArea(ring: Position[]): number {
   let twiceArea = 0;

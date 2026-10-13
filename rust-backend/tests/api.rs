@@ -466,7 +466,7 @@ async fn post_search_matches_only_normalized_visible_content_and_current_destina
         assert_eq!(response.body["results"][0]["id"], LEGACY_POST_ID);
         assert_eq!(
             response.body["results"][0]["href"],
-            format!("/guberniya/ryazanskaya#post-{LEGACY_POST_ID}")
+            format!("/uezd/uyezd-1897-1#post-{LEGACY_POST_ID}")
         );
     }
 
@@ -613,7 +613,7 @@ async fn post_search_matches_only_normalized_visible_content_and_current_destina
     .await;
     assert_eq!(
         moved.body["results"][0]["href"],
-        format!("/guberniya/tulskaya#post-{post_id}")
+        format!("/uezd/uyezd-1897-9#post-{post_id}")
     );
 
     let deleted = api(
@@ -4451,4 +4451,519 @@ async fn settlement_reference_accepts_images_and_preserves_body_only_saves() {
     )
     .await;
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn district_pages_are_automatic_scoped_editable_and_parent_gated() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let database = env.config.database_path.clone();
+
+    let province = api(
+        &app,
+        Method::GET,
+        "/internal/gubernia/ryazanskaya",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        province.body["districts"],
+        json!([
+            {
+                "id": "uyezd-1897-1",
+                "name": "Скопинский уезд",
+                "guberniaId": "ryazan",
+                "url": "/uezd/uyezd-1897-1"
+            },
+            {
+                "id": "uyezd-1897-2",
+                "name": "Ряжский уезд",
+                "guberniaId": "ryazan",
+                "url": "/uezd/uyezd-1897-2"
+            }
+        ])
+    );
+
+    let options = api(
+        &app,
+        Method::GET,
+        "/api/gubernias/ryazan/districts",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(options.status, StatusCode::OK);
+    assert_eq!(options.cache_control(), Some("no-store"));
+    assert_eq!(options.body["districts"], province.body["districts"]);
+    let unpublished_options = api(
+        &app,
+        Method::GET,
+        "/api/gubernias/gubernia-1897-1/districts",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(unpublished_options.status, StatusCode::NOT_FOUND);
+    let unknown_options = api(
+        &app,
+        Method::GET,
+        "/api/gubernias/unknown/districts",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(unknown_options.status, StatusCode::NOT_FOUND);
+
+    let second = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/posts",
+        Some(&cookie),
+        Some(json!({
+            "title": "Другой уезд",
+            "body": paragraph_doc("Не входит в Скопинский уезд"),
+            "category": "Статья",
+            "uyezdId": "uyezd-1897-2"
+        })),
+    )
+    .await;
+    assert_eq!(second.status, StatusCode::CREATED);
+
+    let connection =
+        dimasik_backend::db::open_database(&database).expect("database opens");
+    connection
+        .execute(
+            "UPDATE posts SET uyezd_id = NULL WHERE id = ?1",
+            [common::OLDER_POST_ID],
+        )
+        .unwrap();
+    drop(connection);
+
+    let automatic = api(
+        &app,
+        Method::GET,
+        "/internal/district/uyezd-1897-1",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(automatic.status, StatusCode::OK);
+    assert_eq!(automatic.body["url"], "/uezd/uyezd-1897-1");
+    assert_eq!(automatic.body["description"], Value::Null);
+    assert_eq!(automatic.body["gubernia"]["slug"], "ryazanskaya");
+    assert_eq!(automatic.body["gubernia"]["districts"], options.body["districts"]);
+    assert_eq!(automatic.body["settlements"].as_array().unwrap().len(), 1);
+    let scoped_ids = automatic.body["posts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|post| post["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(scoped_ids, vec![LEGACY_POST_ID, common::OLDER_POST_ID]);
+
+    let unauthorized = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        None,
+        Some(json!({
+            "name": "Скопинский уезд",
+            "url": "/uezd/skopinskiy",
+            "description": null
+        })),
+    )
+    .await;
+    assert_eq!(unauthorized.status, StatusCode::UNAUTHORIZED);
+
+    let mut wrong_origin = request(
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        Some(&cookie),
+        Some(&json!({
+            "name": "Скопинский уезд",
+            "url": "/uezd/skopinskiy",
+            "description": null
+        })),
+    );
+    wrong_origin
+        .headers_mut()
+        .insert("origin", HeaderValue::from_static("http://evil.example"));
+    assert_eq!(
+        send(&app, wrong_origin).await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    for invalid_name in [
+        Value::Null,
+        json!(" \t\n"),
+        json!(format!("{}😀", "а".repeat(199))),
+    ] {
+        let invalid = api(
+            &app,
+            Method::PATCH,
+            "/api/gubernias/ryazan/districts/uyezd-1897-1",
+            Some(&cookie),
+            Some(json!({
+                "name": invalid_name,
+                "url": "/uezd/uyezd-1897-1",
+                "description": null
+            })),
+        )
+        .await;
+        assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
+    }
+    let missing_name = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        Some(&cookie),
+        Some(json!({ "url": "/uezd/uyezd-1897-1", "description": null })),
+    )
+    .await;
+    assert_eq!(missing_name.status, StatusCode::BAD_REQUEST);
+
+    let invalid_url = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        Some(&cookie),
+        Some(json!({
+            "name": "Скопинский уезд",
+            "url": "/uezd/Bad-Slug",
+            "description": null
+        })),
+    )
+    .await;
+    assert_eq!(invalid_url.status, StatusCode::BAD_REQUEST);
+
+    let reserved = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        Some(&cookie),
+        Some(json!({
+            "name": "Скопинский уезд",
+            "url": "/uezd/uyezd-1897-2",
+            "description": null
+        })),
+    )
+    .await;
+    assert_eq!(reserved.status, StatusCode::CONFLICT);
+    let unpublished_reserved = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        Some(&cookie),
+        Some(json!({
+            "name": "Скопинский уезд",
+            "url": "/uezd/uyezd-1897-900",
+            "description": null
+        })),
+    )
+    .await;
+    assert_eq!(unpublished_reserved.status, StatusCode::CONFLICT);
+
+    let updated = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        Some(&cookie),
+        Some(json!({
+            "name": "  Переименованный уезд  ",
+            "url": "/uezd/skopinskiy",
+            "description": paragraph_doc("Справка об уезде")
+        })),
+    )
+    .await;
+    assert_eq!(updated.status, StatusCode::OK);
+    assert_eq!(updated.body["url"], "/uezd/skopinskiy");
+    assert_eq!(updated.body["name"], "Переименованный уезд");
+    assert_eq!(updated.body["gubernia"]["districts"][0]["name"], "Переименованный уезд");
+    assert_eq!(
+        api(
+            &app,
+            Method::GET,
+            "/internal/district/uyezd-1897-1",
+            None,
+            None,
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        api(
+            &app,
+            Method::GET,
+            "/internal/district/skopinskiy",
+            None,
+            None,
+        )
+        .await
+        .body["description"],
+        paragraph_doc("Справка об уезде")
+    );
+    assert_eq!(
+        api(
+            &app,
+            Method::GET,
+            "/internal/gubernia/ryazanskaya",
+            None,
+            None,
+        )
+        .await
+        .body["districts"][0]["name"],
+        "Переименованный уезд"
+    );
+    let renamed_options = api(
+        &app,
+        Method::GET,
+        "/api/gubernias/ryazan/districts",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        renamed_options.body["districts"][0]["name"],
+        "Переименованный уезд"
+    );
+    env.prepare_again().expect("renamed database reopens");
+    let reloaded = api(
+        &app,
+        Method::GET,
+        "/internal/district/skopinskiy",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(reloaded.body["name"], "Переименованный уезд");
+    assert_eq!(reloaded.body["gubernia"]["districts"], renamed_options.body["districts"]);
+    let search = api(
+        &app,
+        Method::GET,
+        &post_search_uri("текст первый", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        search.body["results"][0]["href"],
+        format!("/uezd/skopinskiy#post-{LEGACY_POST_ID}")
+    );
+
+    let withdrawn = api(
+        &app,
+        Method::DELETE,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(withdrawn.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        api(
+            &app,
+            Method::GET,
+            "/internal/district/skopinskiy",
+            Some(&cookie),
+            None,
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    let connection =
+        dimasik_backend::db::open_database(&database).expect("database opens");
+    let district_state: (String, Option<String>, Option<String>, String) = connection
+        .query_row(
+            "SELECT name, display_name, url, description_json FROM districts\n\
+             WHERE id = 'uyezd-1897-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        district_state,
+        ("Скопинский уезд".to_string(), None, None, String::new())
+    );
+    drop(connection);
+    env.prepare_again().expect("renamed database reopens");
+    let hidden_options = api(
+        &app,
+        Method::GET,
+        "/api/gubernias/ryazan/districts",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(hidden_options.status, StatusCode::NOT_FOUND);
+    let republished = api(
+        &app,
+        Method::POST,
+        "/api/gubernias",
+        Some(&cookie),
+        Some(json!({ "id": "ryazan", "slug": "ryazanskaya" })),
+    )
+    .await;
+    assert_eq!(republished.status, StatusCode::CREATED);
+    let reset = api(
+        &app,
+        Method::GET,
+        "/internal/district/uyezd-1897-1",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(reset.status, StatusCode::OK);
+    assert_eq!(reset.body["name"], "Скопинский уезд");
+    assert_eq!(reset.body["description"], Value::Null);
+    assert_eq!(reset.body["gubernia"]["districts"][0]["name"], "Скопинский уезд");
+}
+
+#[tokio::test]
+async fn district_gallery_uses_exclusive_ownership_and_withdrawal_cleanup() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let database = env.config.database_path.clone();
+    let now_ms = dimasik_backend::util::now_unix() * 1_000;
+    insert_pending_image(&database, "img-district", 800, 600, now_ms);
+
+    let saved = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan/districts/uyezd-1897-1",
+        Some(&cookie),
+        Some(json!({
+            "name": "Скопинский уезд",
+            "url": "/uezd/uyezd-1897-1",
+            "description": null,
+            "imageIds": ["img-district"]
+        })),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK);
+    assert_eq!(saved.body["images"][0]["id"], "img-district");
+    assert_eq!(
+        api(
+            &app,
+            Method::GET,
+            "/api/post-images/img-district/original",
+            None,
+            None,
+        )
+        .await
+        .status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    let cross_owner = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        Some(json!({
+            "slug": "ryazanskaya",
+            "description": null,
+            "imageIds": ["img-district"]
+        })),
+    )
+    .await;
+    assert_eq!(cross_owner.status, StatusCode::CONFLICT);
+
+    let connection =
+        dimasik_backend::db::open_database(&database).expect("database opens");
+    let owners: (Option<String>, Option<String>, Option<String>, Option<String>) = connection
+        .query_row(
+            "SELECT post_id, province_id, settlement_id, district_id FROM post_images WHERE id = 'img-district'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        owners,
+        (None, None, None, Some("uyezd-1897-1".to_string()))
+    );
+    assert!(
+        dimasik_backend::store::take_image_for_cleanup(&connection, "img-district", now_ms)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        dimasik_backend::store::list_image_cleanup_batch(&connection, now_ms, None, 100)
+            .unwrap()
+            .iter()
+            .all(|image| image.id != "img-district")
+    );
+    drop(connection);
+
+    let withdrawn = api(
+        &app,
+        Method::DELETE,
+        "/api/gubernias/ryazan",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(withdrawn.status, StatusCode::NO_CONTENT);
+    let connection =
+        dimasik_backend::db::open_database(&database).expect("database opens");
+    let detached: (Option<String>, Option<i64>) = connection
+        .query_row(
+            "SELECT district_id, attached_ms FROM post_images WHERE id = 'img-district'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(detached.0, None);
+    assert!(detached.1.is_some_and(|value| value > 0));
+}
+
+#[tokio::test]
+async fn district_names_accept_utf16_boundary_duplicates_and_clear_canonical_override() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+    let boundary = format!("{}😀", "а".repeat(198));
+    for name in [boundary.as_str(), "Ряжский уезд", "Скопинский уезд"] {
+        let saved = api(
+            &app,
+            Method::PATCH,
+            "/api/gubernias/ryazan/districts/uyezd-1897-1",
+            Some(&cookie),
+            Some(json!({
+                "name": format!("\u{feff}\u{a0}{name}\u{2029}"),
+                "url": "/uezd/uyezd-1897-1",
+                "description": null
+            })),
+        )
+        .await;
+        assert_eq!(saved.status, StatusCode::OK);
+        assert_eq!(saved.body["name"], name);
+        assert_eq!(saved.body["gubernia"]["districts"][0]["name"], name);
+    }
+    let connection = dimasik_backend::db::open_database(&env.config.database_path).unwrap();
+    let state: (String, Option<String>) = connection
+        .query_row(
+            "SELECT name, display_name FROM districts WHERE id = 'uyezd-1897-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("Скопинский уезд".into(), None));
+    let unpublished = api(
+        &app,
+        Method::PATCH,
+        "/api/gubernias/gubernia-1897-1/districts/uyezd-1897-900",
+        Some(&cookie),
+        Some(json!({
+            "name": "Изменённый уезд",
+            "url": "/uezd/uyezd-1897-900",
+            "description": null
+        })),
+    )
+    .await;
+    assert_eq!(unpublished.status, StatusCode::NOT_FOUND);
 }

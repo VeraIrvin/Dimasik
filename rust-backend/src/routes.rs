@@ -122,6 +122,60 @@ pub async fn gubernia_patch(
     Ok(http::json_response(StatusCode::OK, value))
 }
 
+pub async fn districts_get(
+    State(state): State<AppState>,
+    Path(gubernia_id): Path<String>,
+) -> ApiResult<Response> {
+    let value = state
+        .call(move |connection| {
+            store::get_published_district_options(connection, &gubernia_id)
+        })
+        .await?;
+    Ok(http::json_response(StatusCode::OK, value))
+}
+
+pub async fn district_patch(
+    State(state): State<AppState>,
+    Path((gubernia_id, district_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult<Response> {
+    http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
+    let payload = http::read_json_object(&headers, body, Some(GUBERNIA_REQUEST_BYTES)).await?;
+    if !allowed_keys(&payload, &["name", "url", "description", "imageIds"])
+        || !payload.contains_key("name")
+        || !payload.contains_key("url")
+        || !payload.contains_key("description")
+    {
+        return Err(ApiError::bad_request(
+            "Ожидаются название, адрес и содержимое страницы уезда.",
+        ));
+    }
+    let name = payload.get("name").cloned().unwrap_or(Value::Null);
+    let url = payload.get("url").cloned().unwrap_or(Value::Null);
+    let description = payload.get("description").cloned();
+    let image_ids = payload.get("imageIds").cloned();
+    let canonical = state.canonical.clone();
+    let (value, detached) = state
+        .call(move |connection| {
+            store::update_district_publication(
+                connection,
+                &canonical,
+                &gubernia_id,
+                &district_id,
+                &name,
+                &url,
+                description.as_ref(),
+                image_ids.as_ref(),
+            )
+        })
+        .await?;
+    if detached {
+        spawn_image_sweep(&state);
+    }
+    Ok(http::json_response(StatusCode::OK, value))
+}
+
 pub async fn gubernia_delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -389,10 +443,8 @@ pub async fn post_image_get(
         return Err(ApiError::not_found("Изображение не найдено."));
     };
     if access.image.is_attached() {
-        // Attached images follow their province — a post sits in one, a
-        // province gallery and a settlement reference belong to one too:
-        // only published provinces are publicly readable, everything else
-        // stays invisible.
+        // Attached entity images follow their owning province (district
+        // galleries included): only published parents are publicly readable.
         if !access.published {
             return Err(ApiError::not_found("Изображение не найдено."));
         }
@@ -751,6 +803,22 @@ pub async fn internal_gubernia(
     match value {
         Some(value) => Ok(http::json_response(StatusCode::OK, value)),
         None => Err(ApiError::not_found("Губерния не найдена.")),
+    }
+}
+
+pub async fn internal_district(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> ApiResult<Response> {
+    let canonical = state.canonical.clone();
+    let value = state
+        .call(move |connection| {
+            store::find_published_district_by_slug(connection, &canonical, &slug)
+        })
+        .await?;
+    match value {
+        Some(value) => Ok(http::json_response(StatusCode::OK, value)),
+        None => Err(ApiError::not_found("Уезд не найден.")),
     }
 }
 

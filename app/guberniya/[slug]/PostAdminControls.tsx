@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
+import type { DistrictOption, GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import ProvincePostEditor from "./ProvincePostEditor";
 import styles from "./PostAdminControls.module.css";
 
@@ -10,6 +10,7 @@ type Props = {
   guberniaId: string;
   post: GuberniaPost;
   provinces: PublishedOption[];
+  districts: DistrictOption[];
   settlements: Settlement[];
   categories: string[];
 };
@@ -18,6 +19,7 @@ export default function PostAdminControls({
   guberniaId,
   post,
   provinces,
+  districts,
   settlements,
   categories,
 }: Props) {
@@ -97,6 +99,7 @@ export default function PostAdminControls({
         <ProvincePostEditor
           guberniaId={guberniaId}
           provinces={provinces}
+          districts={districts}
           settlements={settlements}
           categories={categories}
           post={post}

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
+import type { DistrictOption, GuberniaPost, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import {
   findTextHighlightRanges,
   normalizePostHighlightQuery,
@@ -16,6 +16,7 @@ type Props = {
   posts: GuberniaPost[];
   guberniaId: string;
   provinces: PublishedOption[];
+  districts: DistrictOption[];
   settlements: Settlement[];
   /** Category options configured in the admin settings. */
   categories: string[];
@@ -74,6 +75,7 @@ export default function PostFeed({
   posts,
   guberniaId,
   provinces,
+  districts,
   settlements,
   categories,
   districtNames,
@@ -194,6 +196,7 @@ export default function PostFeed({
                   guberniaId={guberniaId}
                   post={post}
                   provinces={provinces}
+                  districts={districts}
                   settlements={settlements}
                   categories={categories}
                 />
