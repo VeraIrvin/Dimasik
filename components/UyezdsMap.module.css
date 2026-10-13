@@ -17,6 +17,7 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  --modern-map-control-height: 40px;
 }
 
 /* Two classes so the MapLibre base stylesheet cannot re-position the canvas host. */
@@ -263,7 +264,7 @@
 
   /* Full-width strip with its own scroll: the map stays mostly visible. */
   .panel {
-    top: 10px;
+    top: calc(20px + var(--modern-map-control-height));
     right: 10px;
     left: 10px;
     width: auto;

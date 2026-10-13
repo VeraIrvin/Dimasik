@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import type { DistrictOption, PublishedOption } from "@/lib/gubernia-publications";
+import { parseSettlementCoordinates } from "@/lib/settlement-coordinates";
 import {
   SETTLEMENT_URL_PREFIX,
   SETTLEMENT_URL_SLUG_MAX_LENGTH,
@@ -34,25 +35,6 @@ type SettlementEditorProps = {
   /** Drops the section chrome for dialog embedding; the province page keeps the default. */
   compact?: boolean;
 };
-
-type Coordinates = {
-  latitude: number;
-  longitude: number;
-};
-
-/** The server stores one "latitude, longitude" string, so the field parses it the same way. */
-function parseCoordinates(raw: string): Coordinates | null {
-  const parts = raw.split(",");
-  if (parts.length !== 2) return null;
-  const latitudePart = parts[0].trim();
-  const longitudePart = parts[1].trim();
-  if (!latitudePart || !longitudePart) return null;
-  const latitude = Number(latitudePart);
-  const longitude = Number(longitudePart);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
-  return { latitude, longitude };
-}
 
 export default function SettlementEditor({
   guberniaId,
@@ -169,10 +151,11 @@ export default function SettlementEditor({
       typeRef.current?.focus();
       return;
     }
-    const parsed = parseCoordinates(coordinates);
-    if (!parsed) {
+    try {
+      parseSettlementCoordinates(coordinates);
+    } catch (error) {
       setStatus("");
-      setError("Укажите координаты в формате «широта, долгота», например 56.1234, 40.5678.");
+      setError(error instanceof Error ? error.message : "Некорректные координаты.");
       coordinatesRef.current?.focus();
       return;
     }
@@ -192,7 +175,7 @@ export default function SettlementEditor({
             uyezdId: selectedDistrictId,
             type: typeValue,
             url: settlementUrlForSlug(nextSlug),
-            coordinates: `${parsed.latitude}, ${parsed.longitude}`,
+            coordinates: coordinates.trim() || null,
           }),
         },
       );
@@ -357,7 +340,7 @@ export default function SettlementEditor({
           </select>
         </div>
 
-        <label htmlFor={coordinatesId}>Координаты (широта, долгота)</label>
+        <label htmlFor={coordinatesId}>Координаты (широта, долгота, необязательно)</label>
         <input
           ref={coordinatesRef}
           id={coordinatesId}
@@ -369,14 +352,13 @@ export default function SettlementEditor({
           placeholder="Например, 56.1234, 40.5678"
           autoComplete="off"
           spellCheck={false}
-          required
           onChange={(event) => {
             setCoordinates(event.target.value);
             setStatus("");
           }}
         />
         <p className={styles.hint}>
-          Точка должна находиться в границах выбранного уезда — по ней населённый пункт появится на карте.
+          Без координат населённый пункт останется в списках и поиске, но не появится на карте.
         </p>
 
         {districtsError ? <p className={styles.hint}>{districtsError}</p> : null}

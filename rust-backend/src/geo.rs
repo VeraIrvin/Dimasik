@@ -174,17 +174,10 @@ impl CanonicalProvinces {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum DistrictGeometry {
-    Polygon(Vec<Vec<[f64; 2]>>),
-    MultiPolygon(Vec<Vec<Vec<[f64; 2]>>>),
-}
-
 #[derive(Clone)]
 pub struct District {
     pub id: String,
     pub name: String,
-    pub geometry: DistrictGeometry,
 }
 
 pub struct DistrictCollection {
@@ -275,13 +268,13 @@ impl DistrictCollection {
                     "Historical district GeoJSON contains duplicate id {id}."
                 ));
             }
-            let geometry = parse_geometry(feature.get("geometry"), id)
-                .ok_or_else(|| format!("Historical district {id} has invalid geometry."))?;
+            if !is_valid_geometry(feature.get("geometry")) {
+                return Err(format!("Historical district {id} has invalid geometry."));
+            }
             ids.push(id.to_string());
             districts.push(District {
                 id: id.to_string(),
                 name: name.to_string(),
-                geometry,
             });
         }
 
@@ -303,60 +296,48 @@ fn is_uyezd_id(id: &str) -> bool {
     })
 }
 
-fn parse_position(value: &Value) -> Option<[f64; 2]> {
+fn is_valid_position(value: &Value) -> bool {
     let Value::Array(items) = value else {
-        return None;
+        return false;
     };
-    if items.len() < 2 {
-        return None;
-    }
-    let x = items[0].as_f64().filter(|value| value.is_finite())?;
-    let y = items[1].as_f64().filter(|value| value.is_finite())?;
-    Some([x, y])
+    items.len() >= 2
+        && items[0].as_f64().is_some_and(f64::is_finite)
+        && items[1].as_f64().is_some_and(f64::is_finite)
 }
 
-fn parse_ring(value: &Value) -> Option<Vec<[f64; 2]>> {
+fn is_valid_ring(value: &Value) -> bool {
     let Value::Array(items) = value else {
-        return None;
+        return false;
     };
-    if items.len() < 4 {
-        return None;
-    }
-    items.iter().map(parse_position).collect()
+    items.len() >= 4 && items.iter().all(is_valid_position)
 }
 
-fn parse_polygon(value: &Value) -> Option<Vec<Vec<[f64; 2]>>> {
+fn is_valid_polygon(value: &Value) -> bool {
     let Value::Array(rings) = value else {
-        return None;
+        return false;
     };
-    if rings.is_empty() {
-        return None;
-    }
-    rings.iter().map(parse_ring).collect()
+    !rings.is_empty() && rings.iter().all(is_valid_ring)
 }
 
-fn parse_geometry(value: Option<&Value>, district_id: &str) -> Option<DistrictGeometry> {
-    let value = value?;
-    let record = value.as_object()?;
-    let geometry_type = record.get("type")?.as_str()?;
-    let coordinates = record.get("coordinates")?;
+fn is_valid_geometry(value: Option<&Value>) -> bool {
+    let Some(Value::Object(record)) = value else {
+        return false;
+    };
+    let Some(geometry_type) = record.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(coordinates) = record.get("coordinates") else {
+        return false;
+    };
     match geometry_type {
-        "Polygon" => parse_polygon(coordinates).map(DistrictGeometry::Polygon),
+        "Polygon" => is_valid_polygon(coordinates),
         "MultiPolygon" => {
             let Value::Array(polygons) = coordinates else {
-                let _ = district_id;
-                return None;
+                return false;
             };
-            if polygons.is_empty() {
-                return None;
-            }
-            polygons
-                .iter()
-                .map(parse_polygon)
-                .collect::<Option<Vec<_>>>()
-                .map(DistrictGeometry::MultiPolygon)
+            !polygons.is_empty() && polygons.iter().all(is_valid_polygon)
         }
-        _ => None,
+        _ => false,
     }
 }
 
@@ -462,96 +443,6 @@ impl GeoRuntime {
             .get(uyezd_id)
             .map(|district| district.name.clone()))
     }
-
-    pub fn is_point_in_uyezd(
-        &self,
-        province_id: &str,
-        uyezd_id: &str,
-        longitude: f64,
-        latitude: f64,
-    ) -> Result<bool, String> {
-        let collection = self.load(province_id)?;
-        let Some(district) = collection.get(uyezd_id) else {
-            return Ok(false);
-        };
-        let point = [longitude, latitude];
-        Ok(match &district.geometry {
-            DistrictGeometry::Polygon(polygon) => point_in_polygon(point, polygon),
-            DistrictGeometry::MultiPolygon(polygons) => polygons
-                .iter()
-                .any(|polygon| point_in_polygon(point, polygon)),
-        })
-    }
-}
-
-fn point_on_segment(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> bool {
-    let [x, y] = point;
-    let [x1, y1] = start;
-    let [x2, y2] = end;
-    let cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1);
-    let tolerance = f64::EPSILON
-        * 32.0
-        * 1.0f64
-            .max(x.abs())
-            .max(y.abs())
-            .max(x1.abs())
-            .max(y1.abs())
-            .max(x2.abs())
-            .max(y2.abs());
-    if cross.abs() > tolerance {
-        return false;
-    }
-    x >= x1.min(x2) - tolerance
-        && x <= x1.max(x2) + tolerance
-        && y >= y1.min(y2) - tolerance
-        && y <= y1.max(y2) + tolerance
-}
-
-enum RingLocation {
-    Outside,
-    Inside,
-    Boundary,
-}
-
-fn locate_in_ring(point: [f64; 2], ring: &[[f64; 2]]) -> RingLocation {
-    let mut inside = false;
-    let mut previous = ring.len() - 1;
-    for index in 0..ring.len() {
-        let start = ring[previous];
-        let end = ring[index];
-        if point_on_segment(point, start, end) {
-            return RingLocation::Boundary;
-        }
-        let crosses = (start[1] > point[1]) != (end[1] > point[1])
-            && point[0]
-                < ((end[0] - start[0]) * (point[1] - start[1])) / (end[1] - start[1]) + start[0];
-        if crosses {
-            inside = !inside;
-        }
-        previous = index;
-    }
-    if inside {
-        RingLocation::Inside
-    } else {
-        RingLocation::Outside
-    }
-}
-
-fn point_in_polygon(point: [f64; 2], polygon: &[Vec<[f64; 2]>]) -> bool {
-    match locate_in_ring(point, &polygon[0]) {
-        RingLocation::Outside => false,
-        RingLocation::Boundary => true,
-        RingLocation::Inside => {
-            for hole in &polygon[1..] {
-                match locate_in_ring(point, hole) {
-                    RingLocation::Inside => return false,
-                    RingLocation::Boundary => return true,
-                    RingLocation::Outside => {}
-                }
-            }
-            true
-        }
-    }
 }
 
 #[cfg(test)]
@@ -567,33 +458,6 @@ mod tests {
             [min_x, max_y],
             [min_x, min_y],
         ]
-    }
-
-    #[test]
-    fn point_in_polygon_includes_boundary_and_excludes_holes() {
-        let polygon = vec![square(0.0, 0.0, 10.0, 10.0), square(4.0, 4.0, 6.0, 6.0)];
-        assert!(point_in_polygon([5.0, 5.0], &polygon) == false);
-        assert!(point_in_polygon([5.0, 2.0], &polygon));
-        assert!(point_in_polygon([0.0, 5.0], &polygon));
-        assert!(point_in_polygon([4.0, 5.0], &polygon));
-        assert!(!point_in_polygon([-0.5, 5.0], &polygon));
-        assert!(!point_in_polygon([11.0, 5.0], &polygon));
-    }
-
-    #[test]
-    fn multipolygon_accepts_any_landmass() {
-        let geometry = DistrictGeometry::MultiPolygon(vec![
-            vec![square(0.0, 0.0, 1.0, 1.0)],
-            vec![square(5.0, 5.0, 6.0, 6.0)],
-        ]);
-        let point = [5.5, 5.5];
-        let inside = match &geometry {
-            DistrictGeometry::Polygon(polygon) => point_in_polygon(point, polygon),
-            DistrictGeometry::MultiPolygon(polygons) => {
-                polygons.iter().any(|polygon| point_in_polygon(point, polygon))
-            }
-        };
-        assert!(inside);
     }
 
     #[test]
@@ -618,6 +482,15 @@ mod tests {
         let collection = DistrictCollection::from_value(value, "ryazan").unwrap();
         assert!(collection.get("uyezd-1897-353").is_some());
         assert!(collection.get("uyezd-1897-999").is_none());
+
+        let invalid_geometry = json!({
+            "type": "FeatureCollection",
+            "features": [
+                { "type": "Feature", "properties": { "kind": "province", "id": "ryazan" }, "geometry": { "type": "Polygon", "coordinates": [square(0.0, 0.0, 1.0, 1.0)] } },
+                { "type": "Feature", "properties": { "kind": "district", "id": "uyezd-1897-353", "name": "Скопинский уезд", "provinceId": "ryazan" }, "geometry": { "type": "Polygon", "coordinates": [[[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]]] } }
+            ]
+        });
+        assert!(DistrictCollection::from_value(invalid_geometry, "ryazan").is_err());
 
         let wrong_province = json!({
             "type": "FeatureCollection",

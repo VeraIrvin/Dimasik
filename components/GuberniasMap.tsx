@@ -18,10 +18,13 @@ import type {
 import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon } from 'geojson';
 import type { PublishedOption, Settlement } from '../lib/gubernia-publications';
 import { districtLabelCollection } from '../lib/district-labels';
+import { hasSettlementCoordinates } from '../lib/settlement-coordinates';
+import { isModernMapError } from '../lib/modern-map-layer';
 import type { SiteSettings } from '../lib/site-settings';
 import SettlementEditor from '../app/guberniya/[slug]/SettlementEditor';
 import SettlementListPanel from './SettlementListPanel';
 import MapPostSearch from './MapPostSearch';
+import ModernMapLayerControl, { useModernMapLayer } from './ModernMapLayer';
 import styles from './GuberniasMap.module.css';
 
 // Next.js does not place the worker's shared module beside its bundled URL.
@@ -73,9 +76,9 @@ const LABEL_TEXT_SIZE: ['interpolate', ['linear'], ['zoom'], number, number, num
   ['interpolate', ['linear'], ['zoom'], 3, 8, 3.8, 11];
 
 /**
- * All geometry comes from the same local 1897 reconstruction. Governorates
- * carry borders and labels; the other administrative units remain a neutral
- * silhouette. No contemporary basemap or remote glyph service is used.
+ * Historical geometry comes from the local 1897 reconstruction. Governorates
+ * carry borders and labels; other units remain a neutral silhouette. The
+ * optional contemporary raster is added beneath this presentation.
  */
 const BASE_STYLE: StyleSpecification = {
   version: 8,
@@ -144,6 +147,8 @@ type GuberniasMapProps = {
   settings: SiteSettings;
   /** Homepage tab deep-linked from the URL; unknown query values stay gubernias. */
   initialView: HomeView;
+  /** Stable identity selected by a settlement coordinate link, if present. */
+  initialSettlementId: string | null;
   /** Homepage disclosure state and the region controlled by its header button. */
   searchVisible: boolean;
   searchRegionId: string;
@@ -502,13 +507,14 @@ function settlementHref(url: string): string {
 }
 
 /**
- * One point per published settlement. The local page address comes from the
- * store as provided; the map only navigates to it.
+ * One point per coordinate-bearing published settlement. The local page address
+ * comes from the store as provided; unmapped settlements stay in every list.
  */
 function createSettlementCollection(settlements: Settlement[]): SettlementsCollection {
-  return {
-    type: 'FeatureCollection',
-    features: settlements.map((settlement): SettlementFeature => ({
+  const features: SettlementFeature[] = [];
+  for (const settlement of settlements) {
+    if (!hasSettlementCoordinates(settlement)) continue;
+    features.push({
       type: 'Feature',
       id: settlement.id,
       properties: {
@@ -520,8 +526,9 @@ function createSettlementCollection(settlements: Settlement[]): SettlementsColle
         type: 'Point',
         coordinates: [settlement.longitude, settlement.latitude],
       },
-    })),
-  };
+    });
+  }
+  return { type: 'FeatureCollection', features };
 }
 
 function mergeBounds(all: FeatureBounds[]): FeatureBounds {
@@ -1005,20 +1012,20 @@ function addGuberniaSourceAndLayers(
         ['linear'],
         ['zoom'],
         2,
-        ['case', ['boolean', ['feature-state', 'hover'], false], 5, 3.4],
+        ['case', ['any', ['boolean', ['feature-state', 'hover'], false], ['boolean', ['feature-state', 'selected'], false]], 5, 3.4],
         5,
-        ['case', ['boolean', ['feature-state', 'hover'], false], 6.6, 4.8],
+        ['case', ['any', ['boolean', ['feature-state', 'hover'], false], ['boolean', ['feature-state', 'selected'], false]], 6.6, 4.8],
         8,
-        ['case', ['boolean', ['feature-state', 'hover'], false], 8.2, 6],
+        ['case', ['any', ['boolean', ['feature-state', 'hover'], false], ['boolean', ['feature-state', 'selected'], false]], 8.2, 6],
       ],
       'circle-color': [
         'case',
-        ['boolean', ['feature-state', 'hover'], false],
+        ['any', ['boolean', ['feature-state', 'hover'], false], ['boolean', ['feature-state', 'selected'], false]],
         '#8a6d2f',
         '#a08a51',
       ],
       'circle-stroke-color': '#fffdf7',
-      'circle-stroke-width': 1.4,
+      'circle-stroke-width': ['case', ['boolean', ['feature-state', 'selected'], false], 2.4, 1.4],
       'circle-radius-transition': { duration: 140, delay: 0 },
       'circle-color-transition': { duration: 140, delay: 0 },
     },
@@ -1056,6 +1063,7 @@ export default function GuberniasMap({
   provinces,
   settings,
   initialView,
+  initialSettlementId,
   searchVisible,
   searchRegionId,
 }: GuberniasMapProps) {
@@ -1072,6 +1080,9 @@ export default function GuberniasMap({
   const settlementHoverRef = useRef<string | null>(null);
   const settlementHoverOriginRef = useRef<'list' | 'map' | null>(null);
   const settlementDataRef = useRef<SettlementsCollection>(createSettlementCollection([]));
+  const mappedSettlementIdsRef = useRef<Set<string>>(new Set());
+  const settlementFocusIdRef = useRef<string | null>(initialSettlementId);
+  const selectedSettlementRef = useRef<string | null>(null);
   /** Validated RiStat features, kept across tab switches; `null` until loaded. */
   const districtFeaturesRef = useRef<DistrictFeature[] | null>(null);
   /** Province interior points are computed once with the validated RiStat geometry. */
@@ -1102,6 +1113,7 @@ export default function GuberniasMap({
   const [slug, setSlug] = useState('');
   const [createStatus, setCreateStatus] = useState<CreateStatus>('idle');
   const [createError, setCreateError] = useState('');
+  const modernLayer = useModernMapLayer(status === 'ready' ? mapRef.current : null);
 
   /** Point features keep the store order; ids stay stable across updates. */
   const settlementData = useMemo(() => createSettlementCollection(settlements), [settlements]);
@@ -1129,10 +1141,10 @@ export default function GuberniasMap({
     }
     const map = mapRef.current;
     if (map?.getSource(SETTLEMENT_SOURCE_ID)) {
-      if (current !== null) {
+      if (current !== null && mappedSettlementIdsRef.current.has(current)) {
         map.setFeatureState({ source: SETTLEMENT_SOURCE_ID, id: current }, { hover: false });
       }
-      if (id !== null) {
+      if (id !== null && mappedSettlementIdsRef.current.has(id)) {
         map.setFeatureState({ source: SETTLEMENT_SOURCE_ID, id }, { hover: true });
       }
     }
@@ -1147,22 +1159,30 @@ export default function GuberniasMap({
     [setSettlementHover],
   );
 
-  // Markers follow the `settlements` prop, so a settlement created elsewhere
-  // shows up after router.refresh() without recreating the map.
-  useEffect(() => {
-    settlementDataRef.current = settlementData;
-    const map = mapRef.current;
-    const source = map?.getSource(SETTLEMENT_SOURCE_ID) as GeoJSONSource | undefined;
-    if (!source) return;
-    source.setData(settlementData);
-    const hovered = settlementHoverRef.current;
-    if (hovered !== null && !settlements.some((settlement) => settlement.id === hovered)) {
-      // The replaced source drops the feature states of removed points.
-      settlementHoverRef.current = null;
-      settlementHoverOriginRef.current = null;
-      setSettlementHoveredId(null);
+  /** A missing point is never synthesized; overview remains the fallback. */
+  const focusLinkedSettlement = useCallback((map: MapLibreMap, animated: boolean): boolean => {
+    const id = settlementFocusIdRef.current;
+    if (viewRef.current !== 'settlements' || id === null) return false;
+    const feature = settlementDataRef.current.features.find((entry) => entry.id === id);
+    if (!feature || !map.getSource(SETTLEMENT_SOURCE_ID)) return false;
+    const previous = selectedSettlementRef.current;
+    if (previous !== null && previous !== id && mappedSettlementIdsRef.current.has(previous)) {
+      map.setFeatureState({ source: SETTLEMENT_SOURCE_ID, id: previous }, { selected: false });
     }
-  }, [settlementData, settlements]);
+    selectedSettlementRef.current = id;
+    map.setFeatureState({ source: SETTLEMENT_SOURCE_ID, id }, { selected: true });
+    // Coordinates may legitimately lie outside every historical outline.
+    map.setMaxBounds(null);
+    map.flyTo({
+      center: feature.geometry.coordinates as [number, number],
+      zoom: 9,
+      padding: fitPadding(containerRef.current?.clientWidth ?? window.innerWidth),
+      duration: animated && !window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 600 : 0,
+      essential: false,
+    });
+    return true;
+  }, []);
+
 
   /** The merged API payload is the single publication source of truth. */
   const fetchCollection = useCallback(async (signal?: AbortSignal) => {
@@ -1340,6 +1360,7 @@ export default function GuberniasMap({
   const fitOverview = useCallback((map: MapLibreMap, mode: OverviewMode, animated: boolean) => {
     const bounds = boundsRef.current;
     if (!bounds) return;
+    map.setMaxBounds(expandedMaxBounds(bounds.all));
     const [west, south, east, north] =
       mode === 'published' ? bounds.published : bounds.all;
     const padding = fitPadding(containerRef.current?.clientWidth ?? window.innerWidth);
@@ -1363,6 +1384,44 @@ export default function GuberniasMap({
       },
     );
   }, []);
+
+  // Refresh only point geometry: the complete collection remains the sidebar.
+  useEffect(() => {
+    settlementDataRef.current = settlementData;
+    mappedSettlementIdsRef.current = new Set(settlementData.features.map((feature) => String(feature.id)));
+    const map = mapRef.current;
+    const source = map?.getSource(SETTLEMENT_SOURCE_ID) as GeoJSONSource | undefined;
+    if (!map || !source) return;
+    source.setData(settlementData);
+    const hovered = settlementHoverRef.current;
+    if (hovered !== null && !settlements.some((settlement) => settlement.id === hovered)) {
+      settlementHoverRef.current = null;
+      settlementHoverOriginRef.current = null;
+      setSettlementHoveredId(null);
+    } else if (hovered !== null && mappedSettlementIdsRef.current.has(hovered)) {
+      map.setFeatureState({ source: SETTLEMENT_SOURCE_ID, id: hovered }, { hover: true });
+    }
+    const selected = selectedSettlementRef.current;
+    if (selected !== null && !mappedSettlementIdsRef.current.has(selected)) {
+      selectedSettlementRef.current = null;
+    }
+    if (!focusLinkedSettlement(map, false) && selected !== null && viewRef.current === 'settlements') {
+      fitOverview(map, cameraOverview(), false);
+    }
+  }, [cameraOverview, fitOverview, focusLinkedSettlement, settlementData, settlements]);
+
+  useEffect(() => {
+    settlementFocusIdRef.current = initialSettlementId;
+    const map = mapRef.current;
+    if (!map?.getSource(SETTLEMENT_SOURCE_ID)) return;
+    const selected = selectedSettlementRef.current;
+    if (selected !== null && selected !== initialSettlementId && mappedSettlementIdsRef.current.has(selected)) {
+      map.setFeatureState({ source: SETTLEMENT_SOURCE_ID, id: selected }, { selected: false });
+      selectedSettlementRef.current = null;
+    }
+    if (!focusLinkedSettlement(map, false)) fitOverview(map, cameraOverview(), false);
+  }, [cameraOverview, fitOverview, focusLinkedSettlement, initialSettlementId]);
+
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1413,6 +1472,7 @@ export default function GuberniasMap({
 
         const handleMapError = (event: unknown) => {
           if (disposed) return;
+          if (isModernMapError(event)) return;
           const error = (event as { error?: unknown } | null)?.error;
           setErrorMessage(error instanceof Error ? error.message : 'Неизвестная ошибка карты.');
           setStatus('error');
@@ -1630,6 +1690,7 @@ export default function GuberniasMap({
             }
             applyViewPresentation();
             fitOverview(map, cameraOverview(), false);
+            focusLinkedSettlement(map, false);
             map.on('zoom', updateLabelFilter);
             // Only the filtered published fill layer receives listeners.
             // Unpublished governorates cannot highlight, show a pointer, or navigate.
@@ -1654,9 +1715,11 @@ export default function GuberniasMap({
         resizeObserver = new ResizeObserver(() => {
           map.resize();
           const nextBreakpoint = paddingBreakpoint(container.clientWidth);
-          if (map.loaded() && nextBreakpoint !== currentBreakpoint) {
+          // Raster/district requests can keep loaded() false during a resize.
+          // Source presence means camera/point layers are ready to re-pad now.
+          if (map.getSource(SETTLEMENT_SOURCE_ID) && nextBreakpoint !== currentBreakpoint) {
             currentBreakpoint = nextBreakpoint;
-            fitOverview(map, cameraOverview(), false);
+            if (!focusLinkedSettlement(map, false)) fitOverview(map, cameraOverview(), false);
           }
         });
         resizeObserver.observe(container);
@@ -1681,6 +1744,7 @@ export default function GuberniasMap({
       hoverOriginRef.current = null;
       settlementHoverRef.current = null;
       settlementHoverOriginRef.current = null;
+      selectedSettlementRef.current = null;
       labelFilterRef.current = null;
       viewSyncRef.current = null;
       collectionRef.current = null;
@@ -1688,7 +1752,7 @@ export default function GuberniasMap({
       districtFeaturesRef.current = null;
       provinceLabelsRef.current = null;
     };
-  }, [applyCollection, cameraOverview, fetchCollection, fitOverview, router, setHover, setSettlementHover]);
+  }, [applyCollection, cameraOverview, fetchCollection, fitOverview, focusLinkedSettlement, router, setHover, setSettlementHover]);
 
   // The native dialog element owns focus trapping, Escape, and backdrop
   // behaviour; React state stays the single source of its open flag.
@@ -1832,6 +1896,12 @@ export default function GuberniasMap({
     const map = mapRef.current;
     if (!map || !map.getSource(SOURCE_ID)) return;
     if (settlementView) {
+      settlementFocusIdRef.current = null;
+      const selected = selectedSettlementRef.current;
+      if (selected !== null && mappedSettlementIdsRef.current.has(selected)) {
+        map.setFeatureState({ source: SETTLEMENT_SOURCE_ID, id: selected }, { selected: false });
+      }
+      selectedSettlementRef.current = null;
       const settlementOrigin = settlementHoverOriginRef.current;
       if (settlementOrigin) setSettlementHover(null, settlementOrigin);
       map.getCanvas().style.cursor = '';
@@ -1862,7 +1932,7 @@ export default function GuberniasMap({
     if (settlementOrigin) setSettlementHover(null, settlementOrigin);
     map.getCanvas().style.cursor = '';
     viewSyncRef.current?.();
-    fitOverview(map, cameraOverview(), true);
+    if (!focusLinkedSettlement(map, true)) fitOverview(map, cameraOverview(), true);
   }
 
   /** The extent the active tab's button reflects and toggles. */
@@ -1882,7 +1952,7 @@ export default function GuberniasMap({
 
   return (
     <section
-      className={`${styles.shell} ${view === 'settlements' ? styles.settlementView : ''}`}
+      className={`${styles.shell} ${view === 'settlements' ? styles.settlementView : ''} ${modernLayer.enabled ? styles.modernLayer : ''}`}
       aria-label={
         view === 'settlements' ? 'Карта населённых пунктов' : 'Интерактивная карта губерний'
       }
@@ -1890,8 +1960,13 @@ export default function GuberniasMap({
       <div id={searchRegionId} hidden={!searchVisible}>
         <MapPostSearch view={view} />
       </div>
-      <div className={styles.viewport}>
+      <div id="map" className={styles.viewport}>
         <div ref={containerRef} className={styles.map} />
+        <ModernMapLayerControl
+          layer={modernLayer}
+          map={status === 'ready' ? mapRef.current : null}
+          position="bottom-right"
+        />
 
         <div className={styles.periodCaption}>
           <span>Российская империя</span>

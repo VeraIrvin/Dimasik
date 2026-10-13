@@ -116,6 +116,8 @@ export default function SettlementListPanel({
                   hoveredId === row.id ? `${styles.row} ${styles.rowHovered}` : styles.row
                 }
                 href={`${row.url}?from=settlements`}
+                target={normalizedQuery.length > 0 ? "_blank" : undefined}
+                rel={normalizedQuery.length > 0 ? "noopener" : undefined}
                 prefetch={false}
                 onMouseEnter={() => onHover(row.id)}
                 onMouseLeave={(event) => {

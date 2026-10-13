@@ -536,9 +536,8 @@ pub async fn settlement_create(
     http::require_admin(&headers, &state.auth, state.frontend_origin.as_deref())?;
     let payload = http::read_json_object(&headers, body, Some(SETTLEMENT_REQUEST_BYTES)).await?;
     let canonical = state.canonical.clone();
-    let geo = state.geo.clone();
     let value = state
-        .call(move |conn| store::create_settlement(conn, &canonical, &geo, &id, &payload))
+        .call(move |conn| store::create_settlement(conn, &canonical, &id, &payload))
         .await?;
     Ok(http::json_response(StatusCode::CREATED, value))
 }
@@ -601,7 +600,6 @@ pub async fn reference_patch(
     let image_ids = payload.get("imageIds").cloned();
     let coordinates = payload.get("coordinates").cloned();
     let type_name = payload.get("type").cloned();
-    let geo = state.geo.clone();
     let saved = state
         .call(move |conn| {
             let Some(settlement_id) =
@@ -617,9 +615,6 @@ pub async fn reference_patch(
                 image_ids.as_ref(),
                 coordinates.as_ref(),
                 type_name.as_ref(),
-                |province_id, uyezd_id, longitude, latitude| {
-                    geo.is_point_in_uyezd(province_id, uyezd_id, longitude, latitude)
-                },
             )
         })
         .await?;
@@ -634,7 +629,8 @@ pub async fn reference_patch(
             "name": saved.name,
             "body": saved.body,
             "images": images_json(&saved.images),
-            "coordinates": format!("{}, {}", saved.latitude, saved.longitude),
+            "coordinates": saved.latitude.zip(saved.longitude)
+                .map(|(latitude, longitude)| format!("{latitude}, {longitude}")),
             "type": saved.type_name,
         }),
     ))

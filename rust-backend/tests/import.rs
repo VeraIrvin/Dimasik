@@ -305,6 +305,46 @@ async fn import_accepts_author_defaults_missing_and_rejects_oversized_values() {
 }
 
 #[tokio::test]
+async fn import_accepts_missing_and_null_settlement_coordinate_pairs() {
+    let dir = standard_fixture_dir();
+    let publication_path = dir.path().join("data/gubernia-publications.json");
+    let mut value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
+    let settlements = value["gubernias"]["ryazan"]["settlements"]
+        .as_array_mut()
+        .unwrap();
+    let mut null_coordinates = settlements[0].clone();
+    settlements[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("latitude");
+    settlements[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("longitude");
+    null_coordinates["id"] = json!("22222222-2222-4222-8222-222222222222");
+    null_coordinates["name"] = json!("Без координат");
+    null_coordinates["latitude"] = Value::Null;
+    null_coordinates["longitude"] = Value::Null;
+    settlements.push(null_coordinates);
+    write_json(&publication_path, &value);
+
+    let state = prepare(&base_config(dir.path())).expect("optional coordinates import");
+    let app = build_router(state);
+    let imported = send(
+        &app,
+        request(Method::GET, "/internal/gubernia/ryazanskaya", None, None),
+    )
+    .await;
+    let settlements = imported.body["settlements"].as_array().unwrap();
+    assert_eq!(settlements.len(), 2);
+    for settlement in settlements {
+        assert_eq!(settlement["latitude"], Value::Null);
+        assert_eq!(settlement["longitude"], Value::Null);
+    }
+}
+
+#[tokio::test]
 async fn invalid_slug_or_settlement_state_is_rejected_transactionally() {
     let dir = standard_fixture_dir();
     let publication_path = dir.path().join("data/gubernia-publications.json");
@@ -320,10 +360,39 @@ async fn invalid_slug_or_settlement_state_is_rejected_transactionally() {
     let mut value: Value =
         serde_json::from_str(&std::fs::read_to_string(&publication_path).unwrap()).unwrap();
     value["gubernias"]["tula"]["slug"] = json!("tulskaya");
-    value["gubernias"]["ryazan"]["settlements"][0]["latitude"] = json!(120);
-    write_json(&publication_path, &value);
-    let error = prepare_error(&config);
-    assert!(error.contains("invalid settlement fields"), "got: {error}");
+    for (label, latitude, longitude) in [
+        ("partial", None, Some(json!(5))),
+        ("non-number", Some(json!("5")), Some(json!(5))),
+        ("latitude out-of-range", Some(json!(120)), Some(json!(5))),
+        ("longitude out-of-range", Some(json!(5)), Some(json!(-181))),
+    ] {
+        let mut candidate = value.clone();
+        let settlement = candidate["gubernias"]["ryazan"]["settlements"][0]
+            .as_object_mut()
+            .unwrap();
+        match latitude {
+            Some(latitude) => {
+                settlement.insert("latitude".to_string(), latitude);
+            }
+            None => {
+                settlement.remove("latitude");
+            }
+        }
+        match longitude {
+            Some(longitude) => {
+                settlement.insert("longitude".to_string(), longitude);
+            }
+            None => {
+                settlement.remove("longitude");
+            }
+        }
+        write_json(&publication_path, &candidate);
+        let error = prepare_error(&config);
+        assert!(
+            error.contains("invalid settlement fields"),
+            "{label} coordinate pair returned: {error}"
+        );
+    }
 
     let connection = db::open_database(&config.database_path).unwrap();
     let provinces: i64 = connection

@@ -15,6 +15,8 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  --modern-map-stack-height: 126px;
+  --modern-map-attribution-height: 0px;
 }
 
 /* Two classes so the MapLibre base stylesheet cannot re-position the canvas host. */
@@ -92,7 +94,7 @@
 .viewSwitch {
   position: absolute;
   left: 50%;
-  bottom: 14px;
+  bottom: calc(14px + var(--modern-map-attribution-height));
   z-index: 4;
   display: flex;
   gap: 3px;
@@ -137,6 +139,14 @@
   color: #9b9890;
   cursor: default;
 }
+
+
+@media (min-width: 561px) {
+  .modernLayer .viewport > aside {
+    max-height: calc(100% - 64px);
+  }
+}
+
 
 /*
  * The settlement tab shows the neutral silhouette alone, so the governorate
@@ -248,7 +258,7 @@
 .extentPanel {
   position: absolute;
   left: 16px;
-  bottom: 48px;
+  bottom: calc(48px + var(--modern-map-attribution-height));
   z-index: 2;
 }
 
@@ -256,6 +266,7 @@
 .settlementView .extentPanel {
   right: 60px;
   left: auto;
+  bottom: calc(var(--modern-map-stack-height) + 10px);
 }
 
 .extentButton {
@@ -534,13 +545,10 @@
   cursor: default;
 }
 
-/*
- * Before the phone layout tightens the switcher, stack the settlement overview
- * above it so the two long controls cannot meet around tablet-width screens.
- */
+/* The tablet list must also clear the wider settlement overview above the stack. */
 @media (min-width: 561px) and (max-width: 720px) {
-  .settlementView .extentPanel {
-    bottom: 72px;
+  .settlementView .viewport > aside {
+    max-height: calc(100% - var(--modern-map-stack-height) - 72px);
   }
 }
 
@@ -558,9 +566,14 @@
     width: auto;
     /* The desktop max-width must not narrow the two-column phone layout. */
     max-width: none;
-    max-height: calc(100% - 20px);
+    max-height: calc(100% - var(--modern-map-stack-height) - 120px);
     padding: 8px 8px 7px;
   }
+
+  .settlementView .viewport > aside {
+    max-height: min(230px, 42%, calc(100% - var(--modern-map-stack-height) - 120px));
+  }
+
 
   .panelHeading {
     padding: 0 3px 6px;
@@ -582,16 +595,11 @@
     font-size: 12.5px;
   }
 
-  /* Sits above the zoom control, clear of the panel and the scale control. */
+  /* Captions sit above the overview, which itself clears the native stack. */
   .periodCaption {
     top: auto;
     right: 12px;
-    bottom: 84px;
-  }
-
-  /* In settlement view the overview occupies this corner; keep the caption above it. */
-  .settlementView .periodCaption {
-    bottom: 116px;
+    bottom: calc(var(--modern-map-stack-height) + 70px);
   }
 
   .periodCaption span {
@@ -602,10 +610,10 @@
     font-size: 13px;
   }
 
-  /* Sits above the scale control so both stay tappable on phones. */
+  /* Keep the overview clear of zoom, the layer button, tabs and scale. */
   .extentPanel {
     right: auto;
-    bottom: 62px;
+    bottom: calc(var(--modern-map-stack-height) + 10px);
     left: 10px;
   }
 
@@ -613,6 +621,7 @@
     right: 56px;
     left: auto;
   }
+
 
   .extentButton {
     padding: 7px 10px;
@@ -624,7 +633,7 @@
 
   /* Centered tabs stay clear of the extent button above the scale control. */
   .viewSwitch {
-    bottom: 12px;
+    bottom: calc(12px + var(--modern-map-attribution-height));
     gap: 2px;
     padding: 3px;
   }

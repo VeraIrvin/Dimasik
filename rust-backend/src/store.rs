@@ -8,7 +8,7 @@ use crate::content::{
     visible_post_text, ContentError, EMPTY_DOCUMENT_MESSAGE,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::geo::{CanonicalProvinces, GeoRuntime};
+use crate::geo::CanonicalProvinces;
 use crate::util::{
     effective_district_url, effective_settlement_url, is_js_whitespace, is_valid_district_url,
     is_valid_settlement_url, is_valid_slug, iso_now, js_collapse_whitespace, js_number, js_trim,
@@ -203,17 +203,25 @@ pub fn validate_settlement_url(value: &Value) -> ApiResult<String> {
     }
 }
 
-/// Parses the admin-supplied "широта, долгота" string into (latitude, longitude).
-pub fn parse_coordinates(value: &Value) -> ApiResult<(f64, f64)> {
+/// Parses optional admin-supplied "широта, долгота"; null/blank clears the pair.
+pub fn parse_coordinates(value: &Value) -> ApiResult<(Option<f64>, Option<f64>)> {
+    if value.is_null() {
+        return Ok((None, None));
+    }
     let Some(raw) = value.as_str() else {
         return Err(bad("Координаты должны быть строкой вида «широта, долгота»."));
     };
-    let parts: Vec<&str> = raw.split(',').collect();
-    if parts.len() != 2 {
+    if js_trim(raw).is_empty() {
+        return Ok((None, None));
+    }
+    let Some((latitude_source, longitude_source)) = raw.split_once(',') else {
+        return Err(bad("Координаты должны содержать широту и долготу через запятую."));
+    };
+    if longitude_source.contains(',') {
         return Err(bad("Координаты должны содержать широту и долготу через запятую."));
     }
-    let latitude_source = js_trim(parts[0]);
-    let longitude_source = js_trim(parts[1]);
+    let latitude_source = js_trim(latitude_source);
+    let longitude_source = js_trim(longitude_source);
     let latitude = js_number(latitude_source);
     let longitude = js_number(longitude_source);
     if latitude_source.is_empty()
@@ -226,7 +234,7 @@ pub fn parse_coordinates(value: &Value) -> ApiResult<(f64, f64)> {
     if !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
         return Err(bad("Координаты выходят за допустимые пределы."));
     }
-    Ok((latitude, longitude))
+    Ok((Some(latitude), Some(longitude)))
 }
 
 pub fn normalize_optional_reference_id(
@@ -582,8 +590,8 @@ pub struct SavedSettlementReference {
     pub body: Option<Value>,
     pub images: Vec<PostImageRow>,
     pub detached: bool,
-    pub latitude: f64,
-    pub longitude: f64,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub type_name: Option<String>,
 }
 
@@ -591,7 +599,7 @@ pub struct SavedSettlementReference {
 /// A metadata-only save preserves the current body and gallery. Reference
 /// saves require `body`; `imageIds` cannot be supplied alone. Explicitly
 /// clearing both reference text and its final gallery remains invalid.
-pub fn save_settlement_reference<F>(
+pub fn save_settlement_reference(
     connection: &mut Connection,
     settlement_id: &str,
     name: Option<&Value>,
@@ -599,11 +607,7 @@ pub fn save_settlement_reference<F>(
     image_ids: Option<&Value>,
     coordinates: Option<&Value>,
     type_name: Option<&Value>,
-    point_in_uyezd: F,
-) -> ApiResult<SavedSettlementReference>
-where
-    F: Fn(&str, &str, f64, f64) -> Result<bool, String>,
-{
+) -> ApiResult<SavedSettlementReference> {
     if !is_valid_settlement_id(settlement_id) {
         return Err(ApiError::internal(
             "Settlement reference storage received an invalid settlement id.",
@@ -621,10 +625,10 @@ where
     let requested_coordinates = coordinates.map(parse_coordinates).transpose()?;
     let now_ms = now_unix() * 1_000;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (current_name, province_id, uyezd_id, current_latitude, current_longitude, current_type):
-        (String, String, String, f64, f64, Option<String>) = transaction
+    let (current_name, current_latitude, current_longitude, current_type):
+        (String, Option<f64>, Option<f64>, Option<String>) = transaction
         .query_row(
-            "SELECT name, province_id, uyezd_id, latitude, longitude, type\n\
+            "SELECT name, latitude, longitude, type\n\
              FROM settlements WHERE id = ?1",
             params![settlement_id],
             |row| {
@@ -633,20 +637,12 @@ where
                     row.get(1)?,
                     row.get(2)?,
                     row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
                 ))
             },
         )
         .optional()?
         .ok_or_else(|| ApiError::not_found("Населённый пункт не найден."))?;
     let (latitude, longitude) = requested_coordinates.unwrap_or((current_latitude, current_longitude));
-    if coordinates.is_some()
-        && !point_in_uyezd(&province_id, &uyezd_id, longitude, latitude)
-            .map_err(ApiError::internal)?
-    {
-        return Err(bad("Точка находится за пределами выбранного уезда."));
-    }
     let saved_type = match type_name {
         None => current_type,
         Some(requested)
@@ -781,8 +777,8 @@ pub struct SettlementRow {
     pub province_id: String,
     pub name: String,
     pub uyezd_id: String,
-    pub latitude: f64,
-    pub longitude: f64,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub created_at: String,
     pub url: Option<String>,
     pub type_name: Option<String>,
@@ -2875,7 +2871,6 @@ pub fn delete_post(
 pub fn create_settlement(
     connection: &mut Connection,
     canonical: &CanonicalProvinces,
-    geo: &GeoRuntime,
     gubernia_id: &str,
     payload: &Map<String, Value>,
 ) -> ApiResult<Value> {
@@ -2896,14 +2891,6 @@ pub fn create_settlement(
     require_published(&transaction, gubernia_id)?;
     if !district_exists(&transaction, gubernia_id, &uyezd_id)? {
         return Err(bad("Уезд не найден в этой губернии."));
-    }
-    // The admin types "latitude, longitude"; the point-in-district test maps it
-    // to GeoJSON's [longitude, latitude] order, hole boundaries included.
-    if !geo
-        .is_point_in_uyezd(gubernia_id, &uyezd_id, longitude, latitude)
-        .map_err(ApiError::internal)?
-    {
-        return Err(bad("Точка находится за пределами выбранного уезда."));
     }
     assert_unique_settlement_url(&transaction, &url)?;
 
@@ -3037,7 +3024,16 @@ mod tests {
 
     #[test]
     fn coordinates_follow_the_admin_string_format() {
-        assert_eq!(parse_coordinates(&json!("53.8, 39.2")).unwrap(), (53.8, 39.2));
+        assert_eq!(
+            parse_coordinates(&json!("53.8, 39.2")).unwrap(),
+            (Some(53.8), Some(39.2))
+        );
+        for empty in [Value::Null, json!(""), json!(" \n\t ")] {
+            assert_eq!(parse_coordinates(&empty).unwrap(), (None, None));
+        }
+        for malformed in [json!(42), json!(false), json!([]), json!({}), json!("NaN, 0"), json!("0, Infinity")] {
+            assert!(parse_coordinates(&malformed).is_err());
+        }
         assert_eq!(
             parse_coordinates(&json!("1,2,3")).unwrap_err().message,
             "Координаты должны содержать широту и долготу через запятую."
@@ -3176,15 +3172,6 @@ mod tests {
                          '2026-10-09T00:00:00.000Z', 0);",
             )
             .unwrap();
-    }
-
-    fn test_point_in_uyezd(
-        _province_id: &str,
-        _uyezd_id: &str,
-        _longitude: f64,
-        _latitude: f64,
-    ) -> Result<bool, String> {
-        Ok(true)
     }
 
     #[test]
@@ -4015,7 +4002,6 @@ mod tests {
             Some(&json!(["img-ref"])),
             None,
             None,
-            test_point_in_uyezd,
         )
         .unwrap();
         assert_eq!(saved.name, "Село");
@@ -4042,7 +4028,6 @@ mod tests {
             None,
             None,
             None,
-            test_point_in_uyezd,
         )
         .unwrap();
         assert_eq!(saved.name, "Село");
@@ -4058,7 +4043,6 @@ mod tests {
             Some(&json!([])),
             None,
             None,
-            test_point_in_uyezd,
         )
         .unwrap_err();
         assert_eq!(rejected.message, "Текст публикации не должен быть пустым.");
@@ -4086,7 +4070,6 @@ mod tests {
             Some(&json!([])),
             None,
             None,
-            test_point_in_uyezd,
         )
         .unwrap();
         assert!(saved.images.is_empty());
@@ -4110,7 +4093,6 @@ mod tests {
             None,
             None,
             None,
-            test_point_in_uyezd,
         )
         .unwrap();
         assert_eq!(saved.name, "Новое Село");
@@ -4125,7 +4107,6 @@ mod tests {
             None,
             None,
             None,
-            test_point_in_uyezd,
         )
         .unwrap_err();
         assert_eq!(

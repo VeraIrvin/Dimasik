@@ -13,8 +13,29 @@
   margin-top: 0;
 }
 
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.breadcrumbs a {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.breadcrumbs a:hover,
+.breadcrumbs a:focus-visible {
+  color: var(--accent);
+}
+
 .eyebrow {
-  margin-top: 28px;
+  margin: 18px 0 0;
 }
 
 .title {

@@ -23,29 +23,12 @@ import RichTextField, {
 } from "@/components/RichTextField";
 import type { PostImage } from "@/lib/gubernia-publications";
 import type { PostDocument } from "@/lib/post-content";
+import { parseSettlementCoordinates } from "@/lib/settlement-coordinates";
 import styles from "./AboutContentEditor.module.css";
 
 const KEYBOARD_HINT = "Enter — новый абзац, Shift+Enter — перенос строки внутри абзаца.";
 const SETTLEMENT_NAME_MAX_LENGTH = 200;
 
-type Coordinates = {
-  latitude: number;
-  longitude: number;
-};
-
-/** Mirrors the settlement creation field's accepted "latitude, longitude" format. */
-function parseCoordinates(raw: string): Coordinates | null {
-  const parts = raw.split(",");
-  if (parts.length !== 2) return null;
-  const latitudePart = parts[0].trim();
-  const longitudePart = parts[1].trim();
-  if (!latitudePart || !longitudePart) return null;
-  const latitude = Number(latitudePart);
-  const longitude = Number(longitudePart);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
-  return { latitude, longitude };
-}
 function documentHasVisibleText(document: PostDocument | null) {
   if (!document) return false;
   return nodesHaveVisibleText(document.content);
@@ -93,7 +76,7 @@ type RichPageContentEditorProps = {
    * request. Other shared-editor consumers keep their existing text contract.
    */
   settlementName?: string;
-  /** Opts the settlement form into coordinates/type editing in the same PATCH. */
+  /** Enables coordinates/type editing; empty text means no coordinates, not disabled editing. */
   settlementCoordinates?: string;
   settlementType?: string | null;
   settlementTypes?: string[];
@@ -397,11 +380,14 @@ function RichPageContentForm({
       nameRef.current?.focus();
       return;
     }
-    const parsedCoordinates = metadataEnabled ? parseCoordinates(coordinates) : null;
-    if (metadataEnabled && !parsedCoordinates) {
-      setError("Укажите координаты в формате «широта, долгота», например 56.1234, 40.5678.");
-      coordinatesRef.current?.focus();
-      return;
+    if (metadataEnabled) {
+      try {
+        parseSettlementCoordinates(coordinates);
+      } catch (error) {
+        setError(error instanceof Error ? error.message : "Некорректные координаты.");
+        coordinatesRef.current?.focus();
+        return;
+      }
     }
     const nextType = metadataEnabled && typeValue ? typeValue : undefined;
     if (metadataEnabled && settlementType !== null && !nextType) {
@@ -444,16 +430,12 @@ function RichPageContentForm({
           metadataOnlySave
             ? {
                 name: nextName,
-                ...(parsedCoordinates
-                  ? { coordinates: `${parsedCoordinates.latitude}, ${parsedCoordinates.longitude}` }
-                  : {}),
+                ...(metadataEnabled ? { coordinates: coordinates.trim() || null } : {}),
                 ...(nextType === undefined ? {} : { type: nextType }),
               }
             : {
                 ...(nextName === undefined ? {} : { name: nextName }),
-                ...(parsedCoordinates
-                  ? { coordinates: `${parsedCoordinates.latitude}, ${parsedCoordinates.longitude}` }
-                  : {}),
+                ...(metadataEnabled ? { coordinates: coordinates.trim() || null } : {}),
                 ...(nextType === undefined ? {} : { type: nextType }),
                 body: editor.getJSON(),
                 // The ordered final set is sent every time: kept images in order plus
@@ -489,14 +471,21 @@ function RichPageContentForm({
       let savedType: string | null | undefined;
       if (metadataEnabled) {
         if (
-          typeof data.coordinates !== "string" ||
-          !parseCoordinates(data.coordinates) ||
+          (typeof data.coordinates !== "string" && data.coordinates !== null) ||
           (typeof data.type !== "string" && data.type !== null)
         ) {
           setError("Сервер вернул некорректный ответ. Попробуйте ещё раз.");
           return;
         }
-        savedCoordinates = data.coordinates;
+        if (typeof data.coordinates === "string") {
+          try {
+            parseSettlementCoordinates(data.coordinates);
+          } catch {
+            setError("Сервер вернул некорректный ответ. Попробуйте ещё раз.");
+            return;
+          }
+        }
+        savedCoordinates = data.coordinates ?? "";
         savedType = data.type;
       }
       // The stored record now owns the new uploads: never clean them up as pending.
@@ -573,7 +562,7 @@ function RichPageContentForm({
       {metadataEnabled ? (
         <div className={styles.metadataFields}>
           <label className={styles.metadataField} htmlFor={coordinatesId}>
-            <span className={styles.bodyLabel}>Координаты</span>
+            <span className={styles.bodyLabel}>Координаты (необязательно)</span>
             <input
               ref={coordinatesRef}
               id={coordinatesId}
@@ -583,7 +572,6 @@ function RichPageContentForm({
               inputMode="decimal"
               autoComplete="off"
               spellCheck={false}
-              required
               disabled={saving}
               onChange={(event) => {
                 setCoordinates(event.target.value);

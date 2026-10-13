@@ -2981,7 +2981,9 @@ async fn settlement_creation_validates_geometry_types_and_urls() {
     assert_eq!(created.body["type"], "Село");
     assert_eq!(created.body["uyezdId"], "uyezd-1897-2");
 
-    // The multipolygon's second landmass also counts as inside.
+    // Historical district polygons are descriptive, not a write restriction:
+    // points on another landmass, outside the polygon, and inside a polygon
+    // hole all remain valid settlement coordinates.
     let second_landmass = api(
         &app,
         Method::POST,
@@ -3012,13 +3014,10 @@ async fn settlement_creation_validates_geometry_types_and_urls() {
         })),
     )
     .await;
-    assert_eq!(outside.status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        outside.error_message(),
-        "Точка находится за пределами выбранного уезда."
-    );
+    assert_eq!(outside.status, StatusCode::CREATED);
+    assert_eq!(outside.body["latitude"], 40.0);
+    assert_eq!(outside.body["longitude"], 40.0);
 
-    // Inside the hole of the first district: not part of the uyezd.
     let in_hole = api(
         &app,
         Method::POST,
@@ -3033,11 +3032,7 @@ async fn settlement_creation_validates_geometry_types_and_urls() {
         })),
     )
     .await;
-    assert_eq!(in_hole.status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        in_hole.error_message(),
-        "Точка находится за пределами выбранного уезда."
-    );
+    assert_eq!(in_hole.status, StatusCode::CREATED);
 
     let derived_collision = api(
         &app,
@@ -3147,24 +3142,37 @@ async fn settlement_creation_validates_geometry_types_and_urls() {
     .await;
     assert!(bad_url.error_message().starts_with("Адрес страницы должен"));
 
-    let bad_coordinates = api(
-        &app,
-        Method::POST,
-        "/api/gubernias/ryazan/settlements",
-        Some(&cookie),
-        Some(json!({
-            "name": "x",
-            "uyezdId": "uyezd-1897-1",
-            "coordinates": "1;1",
-            "url": "/naselennyy-punkt/x4",
-            "type": "Село"
-        })),
-    )
-    .await;
-    assert_eq!(
-        bad_coordinates.error_message(),
-        "Координаты должны содержать широту и долготу через запятую."
-    );
+    for (coordinates, message) in [
+        (
+            json!("1;1"),
+            "Координаты должны содержать широту и долготу через запятую.",
+        ),
+        (
+            json!(42),
+            "Координаты должны быть строкой вида «широта, долгота».",
+        ),
+        (
+            json!("91, 0"),
+            "Координаты выходят за допустимые пределы.",
+        ),
+    ] {
+        let rejected = api(
+            &app,
+            Method::POST,
+            "/api/gubernias/ryazan/settlements",
+            Some(&cookie),
+            Some(json!({
+                "name": "Некорректные координаты",
+                "uyezdId": "uyezd-1897-1",
+                "coordinates": coordinates,
+                "url": "/naselennyy-punkt/bad-coordinates",
+                "type": "Село"
+            })),
+        )
+        .await;
+        assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+        assert_eq!(rejected.error_message(), message);
+    }
 
     // Deleting a settlement detaches its posts and drops its reference block.
     let bound_post = api(
@@ -3251,6 +3259,148 @@ async fn settlement_creation_validates_geometry_types_and_urls() {
     assert_eq!(
         second_delete.error_message(),
         "Населённый пункт не найден."
+    );
+}
+
+#[tokio::test]
+async fn settlements_without_coordinates_remain_visible_and_searchable() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+
+    let absent = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/settlements",
+        Some(&cookie),
+        Some(json!({
+            "name": "Без координат отсутствуют",
+            "uyezdId": "uyezd-1897-1",
+            "url": "/naselennyy-punkt/no-coordinates-absent",
+            "type": "Село"
+        })),
+    )
+    .await;
+    assert_eq!(absent.status, StatusCode::CREATED);
+    assert_eq!(absent.body["latitude"], Value::Null);
+    assert_eq!(absent.body["longitude"], Value::Null);
+    let absent_id = absent.body["id"].as_str().unwrap().to_string();
+
+    let explicit_null = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/settlements",
+        Some(&cookie),
+        Some(json!({
+            "name": "Без координат null",
+            "uyezdId": "uyezd-1897-1",
+            "coordinates": null,
+            "url": "/naselennyy-punkt/no-coordinates-null",
+            "type": "Село"
+        })),
+    )
+    .await;
+    assert_eq!(explicit_null.status, StatusCode::CREATED);
+    assert_eq!(explicit_null.body["latitude"], Value::Null);
+    assert_eq!(explicit_null.body["longitude"], Value::Null);
+
+    let blank = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/settlements",
+        Some(&cookie),
+        Some(json!({
+            "name": "Без координат пустая строка",
+            "uyezdId": "uyezd-1897-1",
+            "coordinates": " \n\t ",
+            "url": "/naselennyy-punkt/no-coordinates-blank",
+            "type": "Село"
+        })),
+    )
+    .await;
+    assert_eq!(blank.status, StatusCode::CREATED);
+    assert_eq!(blank.body["latitude"], Value::Null);
+    assert_eq!(blank.body["longitude"], Value::Null);
+
+    let expected = [
+        ("Без координат отсутствуют", absent.body["id"].as_str().unwrap()),
+        (
+            "Без координат null",
+            explicit_null.body["id"].as_str().unwrap(),
+        ),
+        (
+            "Без координат пустая строка",
+            blank.body["id"].as_str().unwrap(),
+        ),
+    ];
+    let gubernia = api(&app, Method::GET, "/internal/gubernia/ryazanskaya", None, None).await;
+    let listed = gubernia.body["settlements"].as_array().unwrap();
+    let geo = api(&app, Method::GET, "/internal/geo", None, None).await;
+    let geo_settlements = geo.body["settlements"].as_array().unwrap();
+    for (name, id) in expected {
+        let list_entry = listed
+            .iter()
+            .find(|settlement| settlement["name"] == name)
+            .expect("coordinate-free settlement remains in the name-search list");
+        assert_eq!(list_entry["id"], id);
+        assert_eq!(list_entry["latitude"], Value::Null);
+        assert_eq!(list_entry["longitude"], Value::Null);
+
+        let geo_entry = geo_settlements
+            .iter()
+            .find(|settlement| settlement["id"] == id)
+            .expect("coordinate-free settlement remains in internal geo");
+        assert_eq!(geo_entry["latitude"], Value::Null);
+        assert_eq!(geo_entry["longitude"], Value::Null);
+    }
+
+    let public = api(
+        &app,
+        Method::GET,
+        "/internal/settlement/no-coordinates-absent",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(public.status, StatusCode::OK);
+    assert_eq!(public.body["settlement"]["latitude"], Value::Null);
+    assert_eq!(public.body["settlement"]["longitude"], Value::Null);
+
+    let post = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/posts",
+        Some(&cookie),
+        Some(json!({
+            "title": "Публикация без координат",
+            "body": paragraph_doc("Текст поселения без точки"),
+            "category": "Статья",
+            "settlementId": absent_id
+        })),
+    )
+    .await;
+    assert_eq!(post.status, StatusCode::CREATED);
+    let found = api(
+        &app,
+        Method::GET,
+        &post_search_uri("поселения без точки", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(found.status, StatusCode::OK);
+    assert_eq!(found.body["total"], 1);
+    assert_eq!(found.body["results"][0]["settlementId"], absent_id);
+    assert_eq!(
+        found.body["results"][0]["settlementName"],
+        "Без координат отсутствуют"
+    );
+    assert_eq!(
+        found.body["results"][0]["href"],
+        format!(
+            "/naselennyy-punkt/no-coordinates-absent#post-{}",
+            post.body["id"].as_str().unwrap()
+        )
     );
 }
 
@@ -4072,26 +4222,23 @@ async fn settlement_reference_metadata_is_atomic_and_visible_to_public_reads() {
     .await;
     assert_eq!(with_reference.status, StatusCode::OK);
 
-    // A point in another district cannot silently move this settlement; the
-    // name, type and reference in the same request all roll back.
+    // Coordinates outside the selected historical district are legal and a
+    // metadata-only save still preserves the existing reference atomically.
     let outside_current_district = api(
         &app,
         Method::PATCH,
         "/api/naselennyy-punkt/metadata/reference",
         Some(&cookie),
         Some(json!({
-            "name": "Не сохранить",
-            "coordinates": "1, 1",
-            "type": "Село",
-            "body": paragraph_doc("Не сохранить")
+            "name": "Вне границ",
+            "coordinates": "1, 1"
         })),
     )
     .await;
-    assert_eq!(outside_current_district.status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        outside_current_district.error_message(),
-        "Точка находится за пределами выбранного уезда."
-    );
+    assert_eq!(outside_current_district.status, StatusCode::OK);
+    assert_eq!(outside_current_district.body["name"], "Вне границ");
+    assert_eq!(outside_current_district.body["coordinates"], "1, 1");
+    assert_eq!(outside_current_district.body["body"], original_body);
 
     // Removing a stored type from settings must not invalidate the unchanged
     // historical value, and a metadata-only save preserves the reference.
@@ -4136,7 +4283,7 @@ async fn settlement_reference_metadata_is_atomic_and_visible_to_public_reads() {
         None,
     )
     .await;
-    assert_eq!(unchanged.body["settlement"]["name"], "Новые метаданные");
+    assert_eq!(unchanged.body["settlement"]["name"], "Вне границ");
     assert_eq!(
         unchanged.body["settlement"]["latitude"].as_f64(),
         Some(22.0)
@@ -4176,6 +4323,115 @@ async fn settlement_reference_metadata_is_atomic_and_visible_to_public_reads() {
     assert_eq!(legacy.status, StatusCode::OK);
     assert_eq!(legacy.body["type"], Value::Null);
     assert_eq!(legacy.body["body"], original_body);
+}
+
+#[tokio::test]
+async fn settlement_coordinate_patch_distinguishes_omitted_clear_and_invalid_values() {
+    let env = TestEnv::new();
+    let app = env.app.clone();
+    let cookie = admin_cookie(&app).await;
+
+    let created = api(
+        &app,
+        Method::POST,
+        "/api/gubernias/ryazan/settlements",
+        Some(&cookie),
+        Some(json!({
+            "name": "Изменение координат",
+            "uyezdId": "uyezd-1897-1",
+            "coordinates": "40, 40",
+            "url": "/naselennyy-punkt/coordinate-patch",
+            "type": "Село"
+        })),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+
+    let omitted = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/coordinate-patch/reference",
+        Some(&cookie),
+        Some(json!({ "name": "Координаты сохранены" })),
+    )
+    .await;
+    assert_eq!(omitted.status, StatusCode::OK);
+    assert_eq!(omitted.body["coordinates"], "40, 40");
+
+    let cleared_with_null = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/coordinate-patch/reference",
+        Some(&cookie),
+        Some(json!({ "coordinates": null })),
+    )
+    .await;
+    assert_eq!(cleared_with_null.status, StatusCode::OK);
+    assert_eq!(cleared_with_null.body["coordinates"], Value::Null);
+
+    let restored = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/coordinate-patch/reference",
+        Some(&cookie),
+        Some(json!({ "coordinates": "12, 13" })),
+    )
+    .await;
+    assert_eq!(restored.status, StatusCode::OK);
+    assert_eq!(restored.body["coordinates"], "12, 13");
+
+    let cleared_with_blank = api(
+        &app,
+        Method::PATCH,
+        "/api/naselennyy-punkt/coordinate-patch/reference",
+        Some(&cookie),
+        Some(json!({ "coordinates": " \t\n " })),
+    )
+    .await;
+    assert_eq!(cleared_with_blank.status, StatusCode::OK);
+    assert_eq!(cleared_with_blank.body["coordinates"], Value::Null);
+
+    for (coordinates, message) in [
+        (
+            json!("1;1"),
+            "Координаты должны содержать широту и долготу через запятую.",
+        ),
+        (
+            json!(false),
+            "Координаты должны быть строкой вида «широта, долгота».",
+        ),
+        (
+            json!("0, 181"),
+            "Координаты выходят за допустимые пределы.",
+        ),
+    ] {
+        let rejected = api(
+            &app,
+            Method::PATCH,
+            "/api/naselennyy-punkt/coordinate-patch/reference",
+            Some(&cookie),
+            Some(json!({
+                "name": "Не сохранять",
+                "coordinates": coordinates
+            })),
+        )
+        .await;
+        assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+        assert_eq!(rejected.error_message(), message);
+    }
+
+    let public = api(
+        &app,
+        Method::GET,
+        "/internal/settlement/coordinate-patch",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(public.status, StatusCode::OK);
+    assert_eq!(public.body["settlement"]["name"], "Координаты сохранены");
+    assert_eq!(public.body["settlement"]["latitude"], Value::Null);
+    assert_eq!(public.body["settlement"]["longitude"], Value::Null);
 }
 
 /// The settlement reference PATCH gains the optional ordered gallery: an

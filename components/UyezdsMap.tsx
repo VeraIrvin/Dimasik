@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import type {
   GeoJSONSource,
-  LngLatBoundsLike,
   Map as MapLibreMap,
   MapLayerMouseEvent,
   StyleSpecification,
@@ -12,6 +11,9 @@ import type {
 import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon } from 'geojson';
 import type { Settlement } from '../lib/gubernia-publications';
 import { districtLabelCollection, type LabelCollection as DistrictLabelCollection } from '../lib/district-labels';
+import { hasSettlementCoordinates } from '../lib/settlement-coordinates';
+import { isModernMapError } from '../lib/modern-map-layer';
+import ModernMapLayerControl, { useModernMapLayer } from './ModernMapLayer';
 import styles from './UyezdsMap.module.css';
 
 // Keep the worker version and local serving convention aligned with the main map.
@@ -258,19 +260,16 @@ function applyDistrictLabelNames(
   };
 }
 
-function expandedMaxBounds([west, south, east, north]: Bounds): LngLatBoundsLike {
-  // Give fitBounds enough room to zoom out on tall, narrow provinces even when
-  // the floating list consumes much of a short viewport.
-  const horizontal = Math.max((east - west) * 1.8, 1.5);
-  const vertical = Math.max((north - south) * 1.8, 1.5);
-  return [
-    [Math.max(-180, west - horizontal), Math.max(-85, south - vertical)],
-    [Math.min(180, east + horizontal), Math.min(85, north + vertical)],
-  ];
-}
-
-function fitPadding(width: number) {
-  if (width <= 600) return { top: 152, right: 16, bottom: 24, left: 16 };
+function fitPadding(map: MapLibreMap) {
+  const container = map.getContainer();
+  const width = container.clientWidth;
+  if (width <= 600) {
+    const panel = container.parentElement?.querySelector<HTMLElement>('[data-map-list]');
+    const control = container.querySelector<HTMLElement>('.maplibregl-ctrl-top-right > .maplibregl-ctrl');
+    // Matches the CSS control row + 10px gap + the actual scrollable list.
+    const panelBottom = (control?.offsetHeight ?? 40) + 20 + (panel?.offsetHeight ?? 132);
+    return { top: panelBottom + 10, right: 16, bottom: 24, left: 16 };
+  }
   if (width <= 900) return { top: 36, right: 36, bottom: 44, left: 278 };
   return { top: 44, right: 44, bottom: 52, left: 286 };
 }
@@ -291,7 +290,7 @@ function settlementRevealZoom(
       [provinceBounds[0], provinceBounds[1]],
       [provinceBounds[2], provinceBounds[3]],
     ],
-    { padding: fitPadding(map.getContainer().clientWidth) },
+    { padding: fitPadding(map) },
   );
   const overviewZoom = overviewCamera?.zoom;
   if (overviewZoom === undefined) return readableZoom;
@@ -313,9 +312,10 @@ function setFeatureState(
 }
 
 function settlementCollection(settlements: Settlement[]): SettlementCollection {
-  return {
-    type: 'FeatureCollection',
-    features: settlements.map((settlement) => ({
+  const features: SettlementCollection['features'] = [];
+  for (const settlement of settlements) {
+    if (!hasSettlementCoordinates(settlement)) continue;
+    features.push({
       type: 'Feature',
       id: settlement.id,
       properties: {
@@ -327,8 +327,9 @@ function settlementCollection(settlements: Settlement[]): SettlementCollection {
         type: 'Point',
         coordinates: [settlement.longitude, settlement.latitude],
       },
-    })),
-  };
+    });
+  }
+  return { type: 'FeatureCollection', features };
 }
 
 function addSourceAndLayers(
@@ -540,6 +541,9 @@ export default function UyezdsMap({
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [status, setStatus] = useState<LoadStatus>('loading');
   const [errorMessage, setErrorMessage] = useState('');
+  const modernLayer = useModernMapLayer(status === 'ready' ? mapRef.current : null);
+  // Keep the complete scope for the sidebar and populated district palette.
+  // Only GeoJSON features and their feature-state IDs require coordinates.
   const mapSettlements = useMemo(
     () =>
       scopeDistrictId === undefined
@@ -583,7 +587,7 @@ export default function UyezdsMap({
         [bounds[2], bounds[3]],
       ],
       {
-        padding: fitPadding(containerRef.current?.clientWidth ?? window.innerWidth),
+        padding: fitPadding(map),
         duration: animated && !window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 600 : 0,
         essential: false,
         ...(maxZoom === undefined ? {} : { maxZoom }),
@@ -633,7 +637,8 @@ export default function UyezdsMap({
     const visible =
       scopeDistrictId !== undefined ||
       latestRef.current.selectedDistrictId !== null ||
-      latestRef.current.selectedSettlementId !== null ||
+      (latestRef.current.selectedSettlementId !== null &&
+        settlementIdsRef.current.has(latestRef.current.selectedSettlementId)) ||
       map.getZoom() >= settlementRevealZoom(map, provinceBoundsRef.current);
     if (settlementLayersVisibleRef.current === visible) return;
 
@@ -672,7 +677,7 @@ export default function UyezdsMap({
 
   const focusSettlement = useCallback((settlement: Settlement) => {
     const map = mapRef.current;
-    if (!map) return;
+    if (!map || !hasSettlementCoordinates(settlement)) return;
     map.flyTo({
       center: [settlement.longitude, settlement.latitude],
       zoom: Math.max(map.getZoom(), 9.5),
@@ -680,6 +685,24 @@ export default function UyezdsMap({
       essential: false,
     });
   }, []);
+
+  // Markers follow the `settlements` prop, so points created elsewhere show up
+  // after router.refresh() without recreating the map.
+  useEffect(() => {
+    if (status !== 'ready') return;
+    const map = mapRef.current;
+    const source = map?.getSource(SETTLEMENT_SOURCE_ID) as GeoJSONSource | undefined;
+    if (!map || !source) return;
+    source.setData(settlementData);
+    settlementIdsRef.current = new Set(settlementData.features.map((feature) => feature.properties.id));
+    if (
+      hoveredSettlementIdRef.current !== null &&
+      !settlementIdsRef.current.has(hoveredSettlementIdRef.current)
+    ) {
+      hoveredSettlementIdRef.current = null;
+    }
+    syncFeatureStates();
+  }, [settlementData, status, syncFeatureStates]);
 
   useEffect(() => {
     if (status !== 'ready') return;
@@ -690,7 +713,7 @@ export default function UyezdsMap({
         ? null
         : (mapSettlements.find((entry) => entry.id === selectedSettlementId) ?? null);
     const viewKey =
-      settlement !== null
+      settlement !== null && hasSettlementCoordinates(settlement)
         ? `settlement:${settlement.id}:${settlement.longitude},${settlement.latitude}`
         : selectedDistrictId !== null && districtBoundsRef.current.has(selectedDistrictId)
           ? `district:${selectedDistrictId}`
@@ -699,7 +722,7 @@ export default function UyezdsMap({
             : `district-scope:${scopeDistrictId}`;
     if (appliedViewRef.current === viewKey) return;
     appliedViewRef.current = viewKey;
-    if (settlement !== null) {
+    if (settlement !== null && hasSettlementCoordinates(settlement)) {
       focusSettlement(settlement);
       return;
     }
@@ -720,24 +743,6 @@ export default function UyezdsMap({
     syncFeatureStates,
     syncSettlementVisibility,
   ]);
-
-  // Markers follow the `settlements` prop, so points created elsewhere show up
-  // after router.refresh() without recreating the map.
-  useEffect(() => {
-    if (status !== 'ready') return;
-    const map = mapRef.current;
-    const source = map?.getSource(SETTLEMENT_SOURCE_ID) as GeoJSONSource | undefined;
-    if (!map || !source) return;
-    source.setData(settlementData);
-    settlementIdsRef.current = new Set(mapSettlements.map((entry) => entry.id));
-    if (
-      hoveredSettlementIdRef.current !== null &&
-      !settlementIdsRef.current.has(hoveredSettlementIdRef.current)
-    ) {
-      hoveredSettlementIdRef.current = null;
-    }
-    syncFeatureStates();
-  }, [mapSettlements, settlementData, status, syncFeatureStates]);
 
   // Editorial district names can change after router.refresh(); update both map
   // sources and the sidebar without rebuilding the MapLibre instance.
@@ -858,7 +863,6 @@ export default function UyezdsMap({
           zoom: 5,
           minZoom: 2,
           maxZoom: 11,
-          maxBounds: expandedMaxBounds(geographicBounds),
           attributionControl: false,
           dragRotate: false,
           pitchWithRotate: false,
@@ -878,6 +882,7 @@ export default function UyezdsMap({
 
         const reportMapError = (event: unknown) => {
           if (disposed) return;
+          if (isModernMapError(event)) return;
           const error = (event as { error?: unknown } | null)?.error;
           setErrorMessage(error instanceof Error ? error.message : 'Неизвестная ошибка карты.');
           setStatus('error');
@@ -945,9 +950,9 @@ export default function UyezdsMap({
           try {
             addSourceAndLayers(map, collection, districtLabels, scopeDistrictId === undefined);
             const settlementSource = map.getSource(SETTLEMENT_SOURCE_ID) as GeoJSONSource;
-            const initialSettlements = latestRef.current.settlements;
-            settlementIdsRef.current = new Set(initialSettlements.map((entry) => entry.id));
-            settlementSource.setData(settlementCollection(initialSettlements));
+            const initialData = settlementCollection(latestRef.current.settlements);
+            settlementIdsRef.current = new Set(initialData.features.map((feature) => feature.properties.id));
+            settlementSource.setData(initialData);
             syncSettlementVisibility();
             map.on('zoom', syncSettlementVisibility);
             syncFeatureStates();
@@ -973,31 +978,39 @@ export default function UyezdsMap({
 
         let width = container.clientWidth;
         let height = container.clientHeight;
+        let paddingTop = fitPadding(map).top;
         resizeObserver = new ResizeObserver(() => {
           const nextWidth = container.clientWidth;
           const nextHeight = container.clientHeight;
-          if (nextWidth === width && nextHeight === height) return;
+          const nextPaddingTop = fitPadding(map).top;
+          if (nextWidth === width && nextHeight === height && nextPaddingTop === paddingTop) return;
           width = nextWidth;
           height = nextHeight;
+          paddingTop = nextPaddingTop;
           map.resize();
           const settlementId = latestRef.current.selectedSettlementId;
           const settlement =
             settlementId === null
               ? null
               : (latestRef.current.settlements.find((entry) => entry.id === settlementId) ?? null);
-          if (settlement) {
+          if (settlement && hasSettlementCoordinates(settlement)) {
             map.setCenter([settlement.longitude, settlement.latitude]);
             return;
           }
           const selected = latestRef.current.selectedDistrictId;
           const bounds =
-            selected !== null ? districtBoundsRef.current.get(selected) : provinceBoundsRef.current;
+            (selected !== null ? districtBoundsRef.current.get(selected) : null) ??
+            provinceBoundsRef.current;
           if (bounds) fitBounds(bounds, false, selected !== null || scopedDistrict ? 9 : undefined);
           // The reveal zoom follows the viewport, so a resize can change it without
           // changing the zoom level itself.
           syncSettlementVisibility();
         });
         resizeObserver.observe(container);
+        const panel = container.parentElement?.querySelector<HTMLElement>('[data-map-list]');
+        const controlCorner = container.querySelector<HTMLElement>('.maplibregl-ctrl-top-right');
+        if (panel) resizeObserver.observe(panel);
+        if (controlCorner) resizeObserver.observe(controlCorner);
       } catch (error) {
         if (disposed || (error instanceof DOMException && error.name === 'AbortError')) return;
         setErrorMessage(error instanceof Error ? error.message : 'Не удалось подготовить карту.');
@@ -1053,9 +1066,14 @@ export default function UyezdsMap({
     >
       <div className={styles.viewport}>
         <div ref={containerRef} className={styles.map} />
+        <ModernMapLayerControl
+          layer={modernLayer}
+          map={status === 'ready' ? mapRef.current : null}
+          position="top-right"
+        />
 
         {scopeDistrictId === undefined ? (
-          <aside className={styles.panel} aria-label="Список уездов">
+          <aside className={styles.panel} data-map-list aria-label="Список уездов">
             <div className={styles.panelHeading}>
               <h2>ДОСТУПНЫЕ УЕЗДЫ</h2>
               <button
@@ -1120,7 +1138,7 @@ export default function UyezdsMap({
             </ul>
           </aside>
         ) : (
-          <aside className={styles.panel} aria-label="Список населённых пунктов уезда">
+          <aside className={styles.panel} data-map-list aria-label="Список населённых пунктов уезда">
             <div className={styles.panelHeading}>
               <h2>НАСЕЛЁННЫЕ ПУНКТЫ</h2>
               <button

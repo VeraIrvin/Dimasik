@@ -7,12 +7,12 @@ use crate::content::legacy_description_json;
 use crate::geo::CanonicalProvinces;
 use crate::util::iso_now;
 
-/// One migration step: SQL applied verbatim, or a data conversion that needs
-/// Rust (`json` escaping of arbitrary legacy plain text cannot be expressed
-/// safely in SQLite DDL).
+/// One migration step: SQL applied verbatim, a data conversion that needs
+/// Rust, or a table rebuild that must temporarily suspend foreign-key actions.
 enum Migration {
     Sql(&'static str),
     Convert(fn(&Transaction<'_>) -> Result<(), String>),
+    Rebuild(fn(&Transaction<'_>) -> Result<(), String>),
 }
 
 const MIGRATIONS: &[(i64, Migration)] = &[
@@ -27,6 +27,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
         8,
         Migration::Sql(include_str!("../migrations/0008_district_display_names.sql")),
     ),
+    (9, Migration::Rebuild(migrate_nullable_settlement_coordinates)),
 ];
 
 /// Version 3: `provinces.description` holds a canonical rich document, so the
@@ -61,6 +62,52 @@ fn migrate_province_descriptions(transaction: &Transaction<'_>) -> Result<(), St
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+/// Version 9: coordinates are optional as one pair. Foreign keys must be
+/// disabled by the runner before this executes: dropping the old parent table
+/// would otherwise apply `ON DELETE SET NULL` to post and image ownership.
+fn migrate_nullable_settlement_coordinates(
+    transaction: &Transaction<'_>,
+) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            "CREATE TABLE settlements_v9 (
+               id TEXT PRIMARY KEY,
+               province_id TEXT NOT NULL REFERENCES provinces (id) ON DELETE CASCADE,
+               name TEXT NOT NULL,
+               uyezd_id TEXT NOT NULL,
+               latitude REAL,
+               longitude REAL,
+               created_at TEXT NOT NULL,
+               position INTEGER NOT NULL,
+               url TEXT,
+               type TEXT,
+               CHECK (
+                 (latitude IS NULL AND longitude IS NULL)
+                 OR (
+                   latitude IS NOT NULL
+                   AND longitude IS NOT NULL
+                   AND typeof(latitude) IN ('integer', 'real')
+                   AND typeof(longitude) IN ('integer', 'real')
+                   AND latitude BETWEEN -90 AND 90
+                   AND longitude BETWEEN -180 AND 180
+                 )
+               )
+             );
+             INSERT INTO settlements_v9 (
+               id, province_id, name, uyezd_id, latitude, longitude,
+               created_at, position, url, type
+             )
+             SELECT
+               id, province_id, name, uyezd_id, latitude, longitude,
+               created_at, position, url, type
+             FROM settlements;
+             DROP TABLE settlements;
+             ALTER TABLE settlements_v9 RENAME TO settlements;
+             CREATE INDEX settlements_province_position
+               ON settlements (province_id, position);",
+        )
+        .map_err(|error| error.to_string())
 }
 
 /// Opens (creating parent directories) with WAL, enforced foreign keys and a
@@ -126,41 +173,102 @@ pub fn migrate(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| format!("Cannot create migration table: {error}"))?;
 
     for (version, migration) in MIGRATIONS {
-        // The version is re-read under the write lock: two processes
-        // cold-starting together must not both apply the same migration.
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| format!("Cannot start migration {version}: {error}"))?;
-        let applied: i64 = transaction
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Cannot read migration state: {error}"))?;
-        if *version <= applied {
-            drop(transaction);
-            continue;
+        let applied = match migration {
+            Migration::Rebuild(_) => {
+                // SQLite ignores changes to `foreign_keys` inside a
+                // transaction. Suspend actions before taking the write lock,
+                // then unconditionally re-enable enforcement after commit or
+                // rollback.
+                connection
+                    .execute_batch("PRAGMA foreign_keys = OFF;")
+                    .map_err(|error| {
+                        format!("Cannot suspend foreign keys for migration {version}: {error}")
+                    })?;
+                let result = apply_migration(connection, *version, migration, true);
+                let restored = connection
+                    .execute_batch("PRAGMA foreign_keys = ON;")
+                    .map_err(|error| {
+                        format!("Cannot restore foreign keys after migration {version}: {error}")
+                    });
+                match (result, restored) {
+                    (Ok(applied), Ok(())) => Ok(applied),
+                    (Err(error), Ok(())) => Err(error),
+                    (Ok(_), Err(error)) => Err(error),
+                    (Err(error), Err(restore_error)) => {
+                        Err(format!("{error}; additionally, {restore_error}"))
+                    }
+                }?
+            }
+            _ => apply_migration(connection, *version, migration, false)?,
+        };
+        if applied {
+            println!("Applied migration {version}.");
         }
-        match migration {
-            Migration::Sql(sql) => transaction
-                .execute_batch(sql)
-                .map_err(|error| format!("Migration {version} failed: {error}"))?,
-            Migration::Convert(convert) => convert(&transaction)
-                .map_err(|error| format!("Migration {version} failed: {error}"))?,
-        }
-        transaction
-            .execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![version, iso_now()],
-            )
-            .map_err(|error| format!("Cannot record migration {version}: {error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("Cannot commit migration {version}: {error}"))?;
-        println!("Applied migration {version}.");
     }
     Ok(())
+}
+
+fn apply_migration(
+    connection: &mut Connection,
+    version: i64,
+    migration: &Migration,
+    check_foreign_keys: bool,
+) -> Result<bool, String> {
+    // The version is re-read under the write lock: two processes cold-starting
+    // together must not both apply the same migration.
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Cannot start migration {version}: {error}"))?;
+    let applied: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Cannot read migration state: {error}"))?;
+    if version <= applied {
+        return Ok(false);
+    }
+
+    match migration {
+        Migration::Sql(sql) => transaction
+            .execute_batch(sql)
+            .map_err(|error| format!("Migration {version} failed: {error}"))?,
+        Migration::Convert(convert) => convert(&transaction)
+            .map_err(|error| format!("Migration {version} failed: {error}"))?,
+        Migration::Rebuild(rebuild) => rebuild(&transaction)
+            .map_err(|error| format!("Migration {version} failed: {error}"))?,
+    }
+
+    if check_foreign_keys {
+        let violation = {
+            let mut statement = transaction
+                .prepare("PRAGMA foreign_key_check")
+                .map_err(|error| format!("Cannot check foreign keys after migration {version}: {error}"))?;
+            let mut rows = statement
+                .query([])
+                .map_err(|error| format!("Cannot check foreign keys after migration {version}: {error}"))?;
+            rows.next()
+                .map_err(|error| format!("Cannot check foreign keys after migration {version}: {error}"))?
+                .is_some()
+        };
+        if violation {
+            return Err(format!(
+                "Migration {version} failed: foreign key check reported a violation"
+            ));
+        }
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            params![version, iso_now()],
+        )
+        .map_err(|error| format!("Cannot record migration {version}: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Cannot commit migration {version}: {error}"))?;
+    Ok(true)
 }
 
 pub fn meta_get(connection: &Connection, key: &str) -> rusqlite::Result<Option<String>> {

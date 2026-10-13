@@ -317,6 +317,8 @@ export default function MapPostSearch({ view }: MapPostSearchProps) {
                       <Link
                         className={styles.resultLink}
                         href={destinationHref(result.href, activeQuery, view)}
+                        target="_blank"
+                        rel="noopener"
                         prefetch={false}
                       >
                         <span className={styles.resultTitle}>{result.title}</span>

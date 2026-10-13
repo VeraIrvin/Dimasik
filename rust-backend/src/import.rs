@@ -39,8 +39,8 @@ struct ImportSettlement {
     id: String,
     name: String,
     uyezd_id: String,
-    latitude: f64,
-    longitude: f64,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
     created_at: String,
     url: Option<String>,
     type_name: Option<String>,
@@ -790,12 +790,22 @@ fn parse_stored_settlement(value: &Value, gubernia_id: &str) -> Result<ImportSet
         }
         _ => return Err(invalid_fields()),
     };
-    let latitude = match settlement.get("latitude").and_then(Value::as_f64) {
-        Some(value) if value.is_finite() && (-90.0..=90.0).contains(&value) => value,
-        _ => return Err(invalid_fields()),
-    };
-    let longitude = match settlement.get("longitude").and_then(Value::as_f64) {
-        Some(value) if value.is_finite() && (-180.0..=180.0).contains(&value) => value,
+    let (latitude, longitude) = match (
+        settlement.get("latitude"),
+        settlement.get("longitude"),
+    ) {
+        (None | Some(Value::Null), None | Some(Value::Null)) => (None, None),
+        (Some(latitude), Some(longitude)) => match (latitude.as_f64(), longitude.as_f64()) {
+            (Some(latitude), Some(longitude))
+                if latitude.is_finite()
+                    && longitude.is_finite()
+                    && (-90.0..=90.0).contains(&latitude)
+                    && (-180.0..=180.0).contains(&longitude) =>
+            {
+                (Some(latitude), Some(longitude))
+            }
+            _ => return Err(invalid_fields()),
+        },
         _ => return Err(invalid_fields()),
     };
     let created_at = match settlement.get("createdAt") {

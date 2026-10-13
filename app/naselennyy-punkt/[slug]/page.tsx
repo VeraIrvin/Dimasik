@@ -5,7 +5,9 @@ import SiteHeader from "@/components/SiteHeader";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getPublishedGeoData, getPublishedSettlementBySlug } from "@/lib/gubernia-publications";
 import { normalizePostHighlightQuery } from "@/lib/post-search-highlight";
+import { formatSettlementCoordinates, hasSettlementCoordinates } from "@/lib/settlement-coordinates";
 import { getSettlementReference } from "@/lib/settlement-reference";
+import { settlementMapHref } from "@/lib/settlement-url";
 import { getSiteSettings } from "@/lib/site-settings";
 import SettlementReferenceEditor from "./SettlementReferenceEditor";
 import SettlementPostExplorer from "./SettlementPostExplorer";
@@ -54,6 +56,16 @@ export default async function SettlementPage({
     : {};
   const posts = gubernia.posts.filter((post) => post.settlementId === settlement.id);
   const hasPosts = posts.length > 0;
+  const coordinates = formatSettlementCoordinates(settlement);
+  const provinceHref = `/guberniya/${encodeURIComponent(gubernia.slug)}`;
+  const provinceBreadcrumbHref = from === "settlements"
+    ? `${provinceHref}?from=settlements`
+    : provinceHref;
+  const districtBreadcrumbHref = district
+    ? from === "settlements"
+      ? `${district.url}?from=settlements`
+      : district.url
+    : null;
   const backHref = from === "settlements"
     ? "/?view=settlements"
     : from === "province"
@@ -70,6 +82,17 @@ export default async function SettlementPage({
           <Link className={`content-page__back ${styles.back}`} href={backHref}>
             ← Вернуться к карте
           </Link>
+          <nav className={styles.breadcrumbs} aria-label="Хлебные крошки">
+            <Link href={provinceBreadcrumbHref}>{gubernia.name}</Link>
+            {district && districtBreadcrumbHref ? (
+              <>
+                <span aria-hidden="true">/</span>
+                <Link href={districtBreadcrumbHref}>{district.name}</Link>
+              </>
+            ) : null}
+            <span aria-hidden="true">/</span>
+            <span aria-current="page">{settlement.name}</span>
+          </nav>
           <p className={`content-page__eyebrow ${styles.eyebrow}`}>
             Историко-генеалогический портал Дмитрия Воробьева
           </p>
@@ -101,7 +124,7 @@ export default async function SettlementPage({
             <dd className={styles.detailValue}>
               <Link
                 className={styles.provinceLink}
-                href={`/guberniya/${encodeURIComponent(gubernia.slug)}`}
+                href={provinceHref}
               >
                 {gubernia.name}
               </Link>
@@ -110,7 +133,15 @@ export default async function SettlementPage({
           <div className={styles.detail}>
             <dt className={styles.detailLabel}>Координаты</dt>
             <dd className={styles.detailValue}>
-              {settlement.latitude}, {settlement.longitude}
+              {hasSettlementCoordinates(settlement) ? (
+                <Link
+                  className={styles.provinceLink}
+                  href={settlementMapHref(settlement.id)}
+                  aria-label={`Показать ${settlement.name} на карте: ${coordinates}`}
+                >
+                  {coordinates}
+                </Link>
+              ) : "Не указаны"}
             </dd>
           </div>
         </dl>
@@ -131,7 +162,7 @@ export default async function SettlementPage({
             settlementId={settlement.id}
             guberniaId={gubernia.id}
             settlementName={settlement.name}
-            settlementCoordinates={`${settlement.latitude}, ${settlement.longitude}`}
+            settlementCoordinates={coordinates}
             settlementType={settlement.type}
             settlementTypes={settings.settlementTypes}
             backHref={backHref}

@@ -14,6 +14,7 @@ type HomeMapProps = {
   provinces: PublishedOption[];
   settings: SiteSettings;
   initialView: HomeView;
+  initialSettlementId: string | null;
 };
 
 export default function HomeMap({
@@ -22,6 +23,7 @@ export default function HomeMap({
   provinces,
   settings,
   initialView,
+  initialSettlementId,
 }: HomeMapProps) {
   const [searchVisible, setSearchVisible] = useState(false);
   const searchRegionId = useId();
@@ -75,6 +77,7 @@ export default function HomeMap({
         settlements={settlements}
         provinces={provinces}
         initialView={initialView}
+        initialSettlementId={initialSettlementId}
         searchVisible={searchVisible}
         searchRegionId={searchRegionId}
       />

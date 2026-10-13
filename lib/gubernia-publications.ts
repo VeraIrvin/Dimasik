@@ -23,8 +23,8 @@ export type Settlement = {
   name: string;
   guberniaId: string;
   uyezdId: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   createdAt: string;
   url: string;
   /** Type chosen from the site settings; rows stored before types stay null. */

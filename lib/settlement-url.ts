@@ -21,3 +21,8 @@ export function isValidSettlementSlug(slug: string): boolean {
 export function settlementUrlForSlug(slug: string): string {
   return `${SETTLEMENT_URL_PREFIX}${slug}`;
 }
+
+/** Stable settlement identity, independent of its editable page address. */
+export function settlementMapHref(id: string): string {
+  return `/?view=settlements&settlement=${encodeURIComponent(id)}#map`;
+}

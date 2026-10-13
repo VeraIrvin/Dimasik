@@ -75,8 +75,9 @@ The RiStat district registry (`id`, `name`, `province`) is seeded in that same
 transaction from `PUBLIC_DATA_DIR/uyezds-1897/*.geojson` (703 rows for the
 current atlas). Every canonical province must ship its district file: a missing
 or invalid file fails the import before any write instead of committing a
-partial registry. Runtime map/point-in-polygon reads stay lenient (a missing
-file behaves as an empty district collection), matching the previous loader.
+partial registry. Runtime geometry loading stays lenient (a missing file behaves
+as an empty district collection); settlement coordinates are not checked against
+historical polygons.
 All four documents must exist: everything is parsed and validated before any
 write, so a partial or invalid source leaves the database unmarked and
 untouched (and `--force` replacement runs in a single transaction, so a bad
@@ -91,6 +92,12 @@ missing or `null` post `author` imports as `""`; a stored author is accepted up
 to 300 UTF-16 code units and is preserved verbatim by import. Settlements
 without a stored `url` expose the derived `/naselennyy-punkt/<id>` address and
 keep `type: null`, and original ids, ordering and timestamps are untouched.
+
+Settlement fixture coordinates are an optional pair: missing or `null` latitude
+and longitude import as two SQL `NULL`s. A partially supplied pair, nonnumeric
+or nonfinite value, latitude outside −90…90 or longitude outside −180…180 aborts
+the import. Existing province/district membership validation remains in place;
+historical polygon containment is not required.
 
 Posts and About fixture bodies accept the same validated table documents as
 runtime writes, including canonical cell attributes and span geometry. Legacy
@@ -160,19 +167,35 @@ to 300 UTF-16 code units. Responses and both province and settlement public
 reads always serialize `author` as a string. `archiveReference` remains the
 storage/API key, while its user-visible and validation label is «Источник».
 
+`POST /api/gubernias/{id}/settlements` accepts optional `coordinates`.
+Omission, `null` or a whitespace-only string stores both coordinates as `NULL`.
+A nonempty value must be a `"latitude, longitude"` string containing two finite
+numbers in the inclusive ranges −90…90 and −180…180; invalid values and types
+are rejected. Province publication, district membership, name, type and URL
+validation remain in force, but there is no historical polygon containment
+check. Settlement DTOs serialize `latitude` and `longitude` as `number | null`,
+always both present or both absent.
+
+Published settlements without coordinates remain in public reads, lists,
+dropdowns and settlement-name search. Only point features and camera focus
+require a coordinate pair; published posts attached to an unmapped settlement
+still participate in post search.
+
 `PATCH /api/naselennyy-punkt/{slug}/reference` accepts optional `name`,
-`coordinates` (a `"latitude, longitude"` string), `type` (a string), `body`
+`coordinates` (a `"latitude, longitude"` string or `null`), `type` (a string), `body`
 and ordered `imageIds`; at least one metadata field or `body` is required, and
 `imageIds` is valid only with `body`. All supplied metadata, reference content
 and gallery changes commit atomically. A metadata-only save preserves the
 current body and gallery and is valid even when the settlement has no reference.
-Changed coordinates must remain inside the settlement's current historical
-district. A changed type must be in the current settings; omitting `type`
+Omitting `coordinates` preserves the stored pair; `null` or a whitespace-only
+string clears both values. A nonempty string uses the same strict numeric range
+validation as creation, without a historical containment check. Coordinates
+can be added later or cleared. A changed type must be in the current settings; omitting `type`
 preserves an existing historical value or `null` (resubmitting the unchanged
 historical value is also accepted). The shared settlement-name validator trims
 the name and enforces 1–200 UTF-16 code units. The canonical response is
 `{name, coordinates, type, body, images}`: `coordinates` is the stored
-`"latitude, longitude"` string, `type` and `body` may be `null`, and `images`
+`"latitude, longitude"` string or `null`, `type` and `body` may be `null`, and `images`
 is the ordered gallery. The settlement id, URL, province, district, creation
 time and order never change. Explicitly clearing all reference text and final
 images remains invalid.
@@ -406,11 +429,11 @@ mutation authorization.
 
 * Canonical province ids, names, labels and geometry stay file-owned in
   `public/data/gubernias.geojson`; historical district shapes are read lazily
-  from `public/data/uyezds-1897/<province>.geojson` for validation.
+  from `public/data/uyezds-1897/<province>.geojson` for historical map geometry.
 * `provinces`, `districts`, `posts`, `settlements`, `settlement_references`,
   `site_settings`, `about_content` and `post_images` hold mutable state.
   Migrations live in `migrations/`, are applied through `schema_migrations`,
-  and currently run through migration 7.
+  and currently run through migration 9.
 * `districts` mirrors the 703 canonical `id`/`name`/`provinceId` triples of the
   district files; geometry stays in GeoJSON. Every row is automatically
   addressable at its effective URL under a published parent, with nullable
@@ -418,6 +441,13 @@ mutation authorization.
   or user-created registry. Settlement and post writes may only use an existing
   `(province, district)` pair, checked inside the write transaction; older
   databases are backfilled from the canonical files.
+* Migration 9 rebuilds `settlements` with nullable coordinates and a pair/range
+  CHECK constraint. The migrator disables `foreign_keys` outside the rebuild
+  transaction, runs `foreign_key_check` before committing, and restores foreign
+  key enforcement on success or failure. It preserves data, ids, ordering,
+  indexes, post relationships and image ownership rather than deleting or
+  reimporting records. Deploy frontend and backend together for the nullable
+  settlement DTO; keep the coordinated SQLite/S3 backup procedure.
 * Post order is a stored per-province `position`; new posts prepend, moved posts
   insert before older `createdAt` values but after equal ones, matching the
   previous array semantics.
