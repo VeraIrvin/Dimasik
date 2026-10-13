@@ -108,6 +108,14 @@
   font-size: 15px;
 }
 
+.highlight {
+  border-radius: 2px;
+  background: #f3dfa0;
+  color: inherit;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 @media (max-width: 900px) {
   .feed {
     grid-template-columns: 184px minmax(0, 1fr);

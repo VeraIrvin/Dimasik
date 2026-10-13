@@ -108,6 +108,7 @@ Browser API (same paths, methods, statuses and error envelopes
 | Method | Path |
 | --- | --- |
 | GET | `/api/gubernias` |
+| GET | `/api/posts/search?q={query}&offset={offset}` |
 | POST | `/api/gubernias` |
 | PATCH, DELETE | `/api/gubernias/{id}` |
 | POST | `/api/gubernias/{id}/posts` |
@@ -122,6 +123,25 @@ Browser API (same paths, methods, statuses and error envelopes
 | POST, PATCH, DELETE | `/api/nastroyki` |
 | POST, DELETE | `/api/admin/session` |
 | GET | `/api/metrika/traffic` (administrator session required) |
+
+`GET /api/posts/search?q=&offset=` is public; `offset` defaults to `0`. It
+returns
+`{query, results: [{id, title, guberniaId, guberniaName, settlementId, settlementName, href}], total, offset, nextOffset}`.
+Each page contains at most 50 matches and `nextOffset` is `null` after the last
+page. The server trims the query and collapses JavaScript whitespace, rejects a
+normalized query longer than 200 UTF-16 code units, and performs a literal
+case-insensitive substring match (`ё` remains distinct from `е`). An empty
+normalized query returns an empty result.
+
+The search covers the title and all visible rich-body text, including formatted
+inline fragments and table cells, but not document attributes or post metadata.
+It streams the existing post rows in stable order and parses bodies as needed;
+there is no search index or schema migration. Only posts in published provinces
+are considered, including when the caller has an administrator session, so the
+route never reveals hidden province content. Each `href` ends in the post's
+`#post-{id}` anchor and points to the settlement's stored (or derived) URL when
+the post currently belongs there, otherwise to its province URL. Like every
+browser API response above, search uses `Cache-Control: no-store`.
 
 Every mutating route except `POST /api/admin/session` (login only checks
 credentials and sets the cookie) and `DELETE /api/admin/session` (which clears

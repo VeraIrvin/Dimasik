@@ -4,6 +4,7 @@ import AdminCreationPanel from "@/app/guberniya/[slug]/AdminCreationPanel";
 import SiteHeader from "@/components/SiteHeader";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getPublishedGeoData, getPublishedSettlementBySlug } from "@/lib/gubernia-publications";
+import { normalizePostHighlightQuery } from "@/lib/post-search-highlight";
 import { getSettlementReference } from "@/lib/settlement-reference";
 import { getSiteSettings } from "@/lib/site-settings";
 import { getUyezd } from "@/lib/uyezd-data";
@@ -23,10 +24,16 @@ export default async function SettlementPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ from?: string | string[] }>;
+  searchParams: Promise<{
+    from?: string | string[];
+    highlight?: string | string[];
+  }>;
 }) {
   const { slug } = await params;
-  const { from } = await searchParams;
+  const { from, highlight } = await searchParams;
+  const highlightQuery = typeof highlight === "string"
+    ? normalizePostHighlightQuery(highlight)
+    : "";
   const published = await getPublishedSettlementBySlug(slug);
   if (!published) {
     notFound();
@@ -149,6 +156,7 @@ export default async function SettlementPage({
             districtNames={districtNames}
             isAdmin={isAdmin}
             backHref={backHref}
+            highlightQuery={highlightQuery}
           />
         </section>
       </main>

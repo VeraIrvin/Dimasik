@@ -4,16 +4,27 @@ import SiteHeader from "@/components/SiteHeader";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getPublishedGeoData, getPublishedGuberniaBySlug } from "@/lib/gubernia-publications";
 import { getSiteSettings } from "@/lib/site-settings";
+import { normalizePostHighlightQuery } from "@/lib/post-search-highlight";
 import GuberniaAdminControls from "./GuberniaAdminControls";
 import ProvinceExplorer from "./ProvinceExplorer";
 import styles from "./page.module.css";
 
 export default async function GuberniaPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{
+    from?: string | string[];
+    highlight?: string | string[];
+  }>;
 }) {
   const { slug } = await params;
+  const { from, highlight } = await searchParams;
+  const highlightQuery = typeof highlight === "string"
+    ? normalizePostHighlightQuery(highlight)
+    : "";
+  const backHref = from === "settlements" ? "/?view=settlements" : "/";
   const [gubernia, geoData, isAdmin, settings] = await Promise.all([
     getPublishedGuberniaBySlug(slug),
     getPublishedGeoData(),
@@ -32,7 +43,7 @@ export default async function GuberniaPage({
       <SiteHeader isAdmin={isAdmin} />
       <main className={`${styles.page} ${hasPosts ? styles.withPosts : ""}`}>
         <header className={styles.header} id="province-page-header">
-          <Link className={`content-page__back ${styles.back}`} href="/">
+          <Link className={`content-page__back ${styles.back}`} href={backHref}>
             ← Вернуться к карте
           </Link>
           <p className={`content-page__eyebrow ${styles.eyebrow}`}>
@@ -59,6 +70,8 @@ export default async function GuberniaPage({
           categories={settings.categories}
           settlementTypes={settings.settlementTypes}
           isAdmin={isAdmin}
+          backHref={backHref}
+          highlightQuery={highlightQuery}
         />
       </main>
     </>

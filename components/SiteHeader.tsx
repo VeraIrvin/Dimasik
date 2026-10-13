@@ -1,12 +1,14 @@
+import type { ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import AdminAccess from "@/components/AdminAccess";
 
 type SiteHeaderProps = {
   isAdmin: boolean;
+  searchControl?: ReactNode;
 };
 
-export default function SiteHeader({ isAdmin }: SiteHeaderProps) {
+export default function SiteHeader({ isAdmin, searchControl }: SiteHeaderProps) {
   return (
     <header className="site-header">
       <Link
@@ -27,6 +29,7 @@ export default function SiteHeader({ isAdmin }: SiteHeaderProps) {
         </span>
       </Link>
       <nav className="site-nav" aria-label="Основная навигация">
+        {searchControl}
         <Link href="/o-proekte">О проекте</Link>
         {isAdmin ? <Link href="/nastroyki">Настройки</Link> : null}
         {isAdmin ? <Link href="/metriki">Метрики</Link> : null}

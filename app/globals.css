@@ -49,6 +49,20 @@ a { color: inherit; }
 .site-nav { display: flex; flex: 0 0 auto; align-items: center; gap: clamp(20px, 3vw, 48px); }
 .site-nav a { font-size: 13px; letter-spacing: .01em; text-decoration: none; }
 .site-nav a:hover { color: #756958; text-decoration: underline; text-underline-offset: 5px; }
+.site-nav__search-button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  place-items: center;
+  cursor: pointer;
+}
+.site-nav__search-button:hover { background: #f0ede5; color: #756958; }
+.site-nav__search-button:focus-visible { outline: 2px solid #6e6557; outline-offset: 2px; }
 
 .content-page {
   width: min(760px, calc(100% - 48px));
@@ -78,5 +92,7 @@ a { color: inherit; }
   .site-brand__name { font-size: 11.5px; line-height: 1.18; }
   .site-nav { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; gap: 6px 14px; padding-bottom: 3px; }
   .site-nav a { font-size: 11px; white-space: nowrap; }
+  .site-nav__search-button { width: 28px; height: 28px; }
+  .site-nav__search-button svg { width: 18px; height: 18px; }
   .content-page__text { font-size: 15px; }
 }

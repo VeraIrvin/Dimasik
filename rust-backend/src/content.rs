@@ -829,6 +829,58 @@ pub fn legacy_description_json(text: &str) -> Result<Option<String>, String> {
         .map_err(|error| format!("Cannot serialise the converted description: {error}"))
 }
 
+/// Extracts only text rendered by a canonical TipTap post document.
+///
+/// Inline text nodes remain contiguous across marks, while hard breaks and
+/// structural nodes contribute a separator. Collapsing whitespace afterwards
+/// therefore gives search the same phrase semantics for paragraphs, list
+/// items and table cells without exposing JSON keys or mark attributes.
+pub fn visible_post_text(document: &Value) -> String {
+    fn separate(output: &mut String) {
+        if !output.is_empty() && !output.ends_with(' ') {
+            output.push(' ');
+        }
+    }
+
+    fn visit(value: &Value, output: &mut String) {
+        let Some(node) = value.as_object() else {
+            return;
+        };
+        match node.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = node.get("text").and_then(Value::as_str) {
+                    output.push_str(text);
+                }
+            }
+            Some("hardBreak") => separate(output),
+            Some("doc") => {
+                if let Some(content) = node.get("content").and_then(Value::as_array) {
+                    for child in content {
+                        visit(child, output);
+                        separate(output);
+                    }
+                }
+            }
+            Some(
+                "paragraph" | "heading" | "blockquote" | "bulletList" | "orderedList"
+                | "listItem" | "table" | "tableRow" | "tableCell" | "tableHeader",
+            ) => {
+                if let Some(content) = node.get("content").and_then(Value::as_array) {
+                    for child in content {
+                        visit(child, output);
+                    }
+                }
+                separate(output);
+            }
+            _ => {}
+        }
+    }
+
+    let mut output = String::new();
+    visit(document, &mut output);
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1437,5 +1489,58 @@ mod tests {
             })
         );
         assert!(normalize_post_document(&parsed).is_ok());
+    }
+
+    #[test]
+    fn visible_text_joins_inline_marks_and_separates_rendered_boundaries() {
+        let document = json!({
+            "type": "doc",
+            "metadata": "not visible",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        { "type": "text", "text": "Кра", "marks": [{ "type": "bold" }] },
+                        {
+                            "type": "text",
+                            "text": "еведение",
+                            "marks": [{ "type": "link", "attrs": { "href": "https://secret.test" } }]
+                        },
+                        { "type": "hardBreak" },
+                        { "type": "text", "text": "новая строка" }
+                    ]
+                },
+                {
+                    "type": "table",
+                    "content": [{
+                        "type": "tableRow",
+                        "content": [
+                            {
+                                "type": "tableCell",
+                                "content": [{
+                                    "type": "paragraph",
+                                    "content": [{ "type": "text", "text": "левая" }]
+                                }]
+                            },
+                            {
+                                "type": "tableCell",
+                                "content": [{
+                                    "type": "paragraph",
+                                    "content": [{ "type": "text", "text": "правая" }]
+                                }]
+                            }
+                        ]
+                    }]
+                }
+            ]
+        });
+
+        assert_eq!(
+            crate::util::js_collapse_whitespace(&visible_post_text(&document)),
+            "Краеведение новая строка левая правая"
+        );
+        let text = visible_post_text(&document);
+        assert!(!text.contains("secret.test"));
+        assert!(!text.contains("metadata"));
     }
 }

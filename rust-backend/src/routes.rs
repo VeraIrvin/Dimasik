@@ -1,7 +1,8 @@
 use axum::body::Body;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::content::MAX_POST_DOCUMENT_JSON_CHARACTERS;
@@ -10,7 +11,7 @@ use crate::http;
 use crate::s3::S3Storage;
 use crate::session;
 use crate::store;
-use crate::util::{now_unix, random_id, utf16_len};
+use crate::util::{js_collapse_whitespace, now_unix, random_id, utf16_len};
 use crate::AppState;
 
 /// `MAX_POST_REQUEST_BYTES = MAX_POST_DOCUMENT_JSON_CHARACTERS * 3 + 2_000`,
@@ -140,6 +141,49 @@ pub async fn gubernia_delete(
 // ---------------------------------------------------------------------------
 // Browser API: posts
 // ---------------------------------------------------------------------------
+
+const MAX_POST_SEARCH_QUERY_LENGTH: usize = 200;
+
+#[derive(Deserialize)]
+pub struct PostSearchQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    offset: usize,
+}
+
+pub async fn posts_search(
+    State(state): State<AppState>,
+    Query(parameters): Query<PostSearchQuery>,
+) -> ApiResult<Response> {
+    let query = js_collapse_whitespace(&parameters.q);
+    if utf16_len(&query) > MAX_POST_SEARCH_QUERY_LENGTH {
+        return Err(ApiError::bad_request(format!(
+            "Поисковый запрос должен быть не длиннее {MAX_POST_SEARCH_QUERY_LENGTH} символов."
+        )));
+    }
+    if query.is_empty() {
+        return Ok(http::json_response(
+            StatusCode::OK,
+            json!({
+                "query": query,
+                "results": [],
+                "total": 0,
+                "offset": parameters.offset,
+                "nextOffset": null,
+            }),
+        ));
+    }
+
+    let canonical = state.canonical.clone();
+    let offset = parameters.offset;
+    let value = state
+        .call(move |connection| {
+            store::search_published_posts(connection, &canonical, &query, offset)
+        })
+        .await?;
+    Ok(http::json_response(StatusCode::OK, value))
+}
 
 pub async fn post_create(
     State(state): State<AppState>,

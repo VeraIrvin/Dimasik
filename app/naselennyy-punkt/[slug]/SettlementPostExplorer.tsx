@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PostFeed from "@/app/guberniya/[slug]/PostFeed";
 import ProvinceFilterControls from "@/app/guberniya/[slug]/ProvinceFilterControls";
 import ProvinceQuickNavigation from "@/app/guberniya/[slug]/ProvinceQuickNavigation";
@@ -18,6 +18,7 @@ type Props = {
   isAdmin: boolean;
   /** Contextual map destination, identical to the in-flow header back link. */
   backHref: string;
+  highlightQuery: string;
 };
 
 /**
@@ -39,9 +40,28 @@ export default function SettlementPostExplorer({
   districtNames,
   isAdmin,
   backHref,
+  highlightQuery,
 }: Props) {
   const [year, setYear] = useState("");
   const [category, setCategory] = useState("");
+  useEffect(() => {
+    if (!highlightQuery) return;
+
+    function revealHashTarget() {
+      if (!window.location.hash.startsWith("#post-")) return;
+      setYear("");
+      setCategory("");
+    }
+
+    revealHashTarget();
+    window.addEventListener("hashchange", revealHashTarget);
+    window.addEventListener("popstate", revealHashTarget);
+    return () => {
+      window.removeEventListener("hashchange", revealHashTarget);
+      window.removeEventListener("popstate", revealHashTarget);
+    };
+  }, [highlightQuery]);
+
 
   // Same ordering as the province filter; legacy posts without a year stay in «Все годы».
   const years = useMemo(
@@ -133,6 +153,7 @@ export default function SettlementPostExplorer({
             : "Сообщений об этом населённом пункте пока нет."
         }
         keepSidebarWhenEmpty={posts.length > 0}
+        highlightQuery={highlightQuery}
       />
     </>
   );

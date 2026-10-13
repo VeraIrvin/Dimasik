@@ -4,15 +4,15 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value};
 
 use crate::content::{
-    normalize_optional_document, normalize_post_document, plain_text_to_document, ContentError,
-    EMPTY_DOCUMENT_MESSAGE,
+    normalize_optional_document, normalize_post_document, plain_text_to_document,
+    visible_post_text, ContentError, EMPTY_DOCUMENT_MESSAGE,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::geo::{CanonicalProvinces, GeoRuntime};
 use crate::util::{
-    effective_settlement_url, is_valid_settlement_url, is_valid_slug, iso_now, js_collapse_whitespace,
-    js_number, js_trim, now_unix, parse_js_date_ms, random_id, ru_compare, utf16_len,
-    SETTLEMENT_URL_PREFIX,
+    effective_settlement_url, is_js_whitespace, is_valid_settlement_url, is_valid_slug, iso_now,
+    js_collapse_whitespace, js_number, js_trim, now_unix, parse_js_date_ms, random_id, ru_compare,
+    utf16_len, SETTLEMENT_URL_PREFIX,
 };
 
 pub const MAX_TITLE_LENGTH: usize = 1_000;
@@ -1128,6 +1128,117 @@ fn load_posts(connection: &Connection, province_id: &str) -> ApiResult<Vec<PostR
         }
     }
     Ok(posts)
+}
+
+fn post_search_text_matches(text: &str, folded_query: &str) -> bool {
+    let mut normalized = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for character in js_trim(text).chars() {
+        if is_js_whitespace(character) {
+            pending_space = true;
+        } else {
+            if pending_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            normalized.push(character);
+            pending_space = false;
+        }
+    }
+    normalized.to_lowercase().contains(folded_query)
+}
+
+pub const POST_SEARCH_PAGE_SIZE: usize = 50;
+
+/// Searches every post in published provinces in stable creation order.
+///
+/// The result offset is applied to matches rather than SQL candidates. Rows
+/// are consumed one at a time, and title matches skip rich-body parsing.
+pub fn search_published_posts(
+    connection: &Connection,
+    canonical: &CanonicalProvinces,
+    query: &str,
+    offset: usize,
+) -> ApiResult<Value> {
+    let folded_query = query.to_lowercase();
+    let mut statement = connection.prepare(
+        "SELECT post.id, post.title, post.body_json, p.id, p.slug,\n\
+                post.settlement_id, s.id, s.name, s.url\n\
+         FROM posts post\n\
+         JOIN provinces p ON p.id = post.province_id AND p.published = 1\n\
+         LEFT JOIN settlements s\n\
+           ON s.id = post.settlement_id AND s.province_id = post.province_id\n\
+         ORDER BY post.created_ms DESC, post.id ASC",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut total = 0usize;
+    let mut results = Vec::with_capacity(POST_SEARCH_PAGE_SIZE);
+
+    while let Some(row) = rows.next()? {
+        let title = row.get_ref(1)?.as_str().map_err(|error| {
+            ApiError::internal(format!("Stored post title is not text: {error}"))
+        })?;
+        let title_matches = post_search_text_matches(title, &folded_query);
+        let matches = if title_matches {
+            true
+        } else {
+            let body_json = row.get_ref(2)?.as_str().map_err(|error| {
+                ApiError::internal(format!("Stored post body is not text: {error}"))
+            })?;
+            let body: Value = serde_json::from_str(body_json).map_err(|error| {
+                ApiError::internal(format!("Stored post body is invalid JSON: {error}"))
+            })?;
+            post_search_text_matches(&visible_post_text(&body), &folded_query)
+        };
+        if !matches {
+            continue;
+        }
+
+        let match_index = total;
+        total += 1;
+        if match_index < offset || results.len() == POST_SEARCH_PAGE_SIZE {
+            continue;
+        }
+
+        let id: String = row.get(0)?;
+        let gubernia_id: String = row.get(3)?;
+        let slug: String = row.get(4)?;
+        let gubernia_name = canonical
+            .features
+            .iter()
+            .find(|feature| feature.id == gubernia_id)
+            .map(|feature| feature.name.as_str())
+            .ok_or_else(|| ApiError::internal(format!("Unknown canonical province {gubernia_id}")))?;
+        let stored_settlement_id: Option<String> = row.get(5)?;
+        let settlement_id: Option<String> = row.get(6)?;
+        let settlement_name: Option<String> = row.get(7)?;
+        let settlement_url: Option<String> = row.get(8)?;
+        let href = match settlement_id.as_deref() {
+            Some(current_id) if stored_settlement_id.as_deref() == Some(current_id) => format!(
+                "{}#post-{id}",
+                effective_settlement_url(settlement_url.as_deref(), current_id)
+            ),
+            _ => format!("/guberniya/{slug}#post-{id}"),
+        };
+        results.push(serde_json::json!({
+            "id": id,
+            "title": title,
+            "guberniaId": gubernia_id,
+            "guberniaName": gubernia_name,
+            "settlementId": settlement_id,
+            "settlementName": settlement_name,
+            "href": href,
+        }));
+    }
+
+    let consumed = offset.saturating_add(results.len());
+    let next_offset = (consumed < total).then_some(consumed);
+    Ok(serde_json::json!({
+        "query": query,
+        "results": results,
+        "total": total,
+        "offset": offset,
+        "nextOffset": next_offset,
+    }))
 }
 
 fn require_post(

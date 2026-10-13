@@ -1,9 +1,38 @@
 import type { ReactNode } from "react";
 import type { PostDocument, PostMark, PostNode } from "@/lib/post-content";
+import {
+  findPostHighlightRanges,
+  type HighlightRange,
+} from "@/lib/post-search-highlight";
 import styles from "./PostBody.module.css";
 
-function renderText(text: string, marks: PostMark[] | undefined): ReactNode {
-  let result: ReactNode = text;
+function renderText(
+  text: string,
+  marks: PostMark[] | undefined,
+  highlightRanges: HighlightRange[] | undefined,
+): ReactNode {
+  let content: ReactNode = text;
+  if (highlightRanges?.length) {
+    const parts: ReactNode[] = [];
+    let offset = 0;
+    for (const range of highlightRanges) {
+      if (range.start > offset) parts.push(text.slice(offset, range.start));
+      parts.push(
+        <mark
+          key={`${range.start}-${range.end}`}
+          className={styles.highlight}
+          data-post-search-highlight=""
+        >
+          {text.slice(range.start, range.end)}
+        </mark>,
+      );
+      offset = range.end;
+    }
+    if (offset < text.length) parts.push(text.slice(offset));
+    content = parts;
+  }
+
+  let result: ReactNode = content;
 
   for (const mark of marks ?? []) {
     switch (mark.type) {
@@ -38,8 +67,12 @@ function safeCellSpan(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 1;
 }
 
-function renderNode(node: PostNode, key: number): ReactNode {
-  const children = node.content?.map(renderNode);
+function renderNode(
+  node: PostNode,
+  key: number,
+  highlights: Map<PostNode, HighlightRange[]>,
+): ReactNode {
+  const children = node.content?.map((child, index) => renderNode(child, index, highlights));
   const textAlign = node.attrs?.textAlign as "left" | "center" | "right" | "justify" | undefined;
 
   switch (node.type) {
@@ -86,12 +119,27 @@ function renderNode(node: PostNode, key: number): ReactNode {
     case "hardBreak":
       return <br key={key} />;
     case "text":
-      return <span key={key}>{renderText(node.text ?? "", node.marks)}</span>;
+      return (
+        <span key={key}>
+          {renderText(node.text ?? "", node.marks, highlights.get(node))}
+        </span>
+      );
     default:
       return null;
   }
 }
 
-export default function PostBody({ body }: { body: PostDocument }) {
-  return <div className={styles.body}>{body.content.map(renderNode)}</div>;
+export default function PostBody({
+  body,
+  highlightQuery = "",
+}: {
+  body: PostDocument;
+  highlightQuery?: string;
+}) {
+  const highlights = findPostHighlightRanges(body, highlightQuery);
+  return (
+    <div className={styles.body}>
+      {body.content.map((node, index) => renderNode(node, index, highlights))}
+    </div>
+  );
 }

@@ -1,5 +1,4 @@
-import GuberniasMap from "@/components/GuberniasMap";
-import SiteHeader from "@/components/SiteHeader";
+import HomeMap from "@/components/HomeMap";
 import { hasAdminSession } from "@/lib/admin-session";
 import { getPublishedGeoData } from "@/lib/gubernia-publications";
 import { getSiteSettings } from "@/lib/site-settings";
@@ -19,15 +18,12 @@ export default async function HomePage({
   // keeps the governorate overview.
   const initialView = view === "settlements" ? "settlements" : "gubernias";
   return (
-    <main className="site-shell">
-      <SiteHeader isAdmin={isAdmin} />
-      <GuberniasMap
-        isAdmin={isAdmin}
-        settings={settings}
-        settlements={geoData.settlements}
-        provinces={geoData.provinces}
-        initialView={initialView}
-      />
-    </main>
+    <HomeMap
+      isAdmin={isAdmin}
+      settings={settings}
+      settlements={geoData.settlements}
+      provinces={geoData.provinces}
+      initialView={initialView}
+    />
   );
 }

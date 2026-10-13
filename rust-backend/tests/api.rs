@@ -20,6 +20,14 @@ async fn api(
     send(app, request(http_method, uri, cookie, body.as_ref())).await
 }
 
+fn post_search_uri(query: &str, offset: usize) -> String {
+    let mut serializer =
+        url::form_urlencoded::Serializer::new(String::from("/api/posts/search?"));
+    serializer.append_pair("q", query);
+    serializer.append_pair("offset", &offset.to_string());
+    serializer.finish()
+}
+
 /// Inserts a pending upload row exactly as the upload route does once the
 /// storage objects exist, so the image lifecycle can be tested without S3.
 fn insert_pending_image(
@@ -367,6 +375,333 @@ async fn public_metrics_exclude_unpublished_provinces_and_their_retained_content
             "provinces": []
         })
     );
+}
+
+#[tokio::test]
+async fn post_search_matches_only_normalized_visible_content_and_current_destinations() {
+    let env = TestEnv::new();
+    let connection =
+        dimasik_backend::db::open_database(&env.config.database_path).expect("database opens");
+    let long_prefix = "далеко ".repeat(100);
+    let body = json!({
+        "type": "doc",
+        "metadata": "невидимый-метатекст",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    { "type": "text", "text": "Кра", "marks": [{ "type": "bold" }] },
+                    {
+                        "type": "text",
+                        "text": "ЕВЕДЕНИЕ",
+                        "marks": [{
+                            "type": "link",
+                            "attrs": { "href": "https://example.test/секрет-ссылки" }
+                        }]
+                    },
+                    { "type": "hardBreak" },
+                    { "type": "text", "text": "новая строка" }
+                ]
+            },
+            {
+                "type": "table",
+                "content": [{
+                    "type": "tableRow",
+                    "content": [
+                        {
+                            "type": "tableCell",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "левая" }]
+                            }]
+                        },
+                        {
+                            "type": "tableCell",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "правая" }]
+                            }]
+                        }
+                    ]
+                }]
+            },
+            {
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": format!("{long_prefix}дальний фрагмент %_.*[x]") }]
+            }
+        ]
+    });
+    connection
+        .execute(
+            "UPDATE posts SET title = ?1, body_json = ?2 WHERE id = ?3",
+            rusqlite::params![
+                "  Заголовок   с пробелами  ",
+                body.to_string(),
+                LEGACY_POST_ID
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO posts
+             (id, province_id, title, body_json, created_at, updated_at, created_ms, position)
+             VALUES ('hidden-search', 'gubernia-1897-1', 'скрытый архив',
+                     ?1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 1, 0)",
+            [paragraph_doc("тайная публикация").to_string()],
+        )
+        .unwrap();
+
+    for phrase in [
+        "  кРаЕвЕдЕнИе \t НОВАЯ\nСТРОКА ",
+        "левая правая",
+        "дальний фрагмент",
+        "%_.*[x]",
+        "заголовок с пробелами",
+    ] {
+        let response =
+            api(&env.app, Method::GET, &post_search_uri(phrase, 0), None, None).await;
+        assert_eq!(response.status, StatusCode::OK, "{phrase}");
+        assert_eq!(response.cache_control(), Some("no-store"));
+        assert_eq!(response.body["total"], 1, "{phrase}");
+        assert_eq!(response.body["results"][0]["id"], LEGACY_POST_ID);
+        assert_eq!(
+            response.body["results"][0]["href"],
+            format!("/guberniya/ryazanskaya#post-{LEGACY_POST_ID}")
+        );
+    }
+
+    for invisible in ["невидимый-метатекст", "секрет-ссылки", "paragraph", "href"] {
+        let response = api(
+            &env.app,
+            Method::GET,
+            &post_search_uri(invisible, 0),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.body["total"], 0, "{invisible}");
+    }
+
+    let cookie = admin_cookie(&env.app).await;
+    let hidden = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("тайная публикация", 0),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(hidden.body["total"], 0);
+
+    let empty = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri(" \t\n ", 7),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        empty.body,
+        json!({ "query": "", "results": [], "total": 0, "offset": 7, "nextOffset": null })
+    );
+    let oversized = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri(&"я".repeat(201), 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(oversized.status, StatusCode::BAD_REQUEST);
+
+    connection
+        .execute(
+            "UPDATE settlements SET url = '/naselennyy-punkt/pavelets' WHERE id = ?1",
+            [LEGACY_SETTLEMENT_ID],
+        )
+        .unwrap();
+    let custom = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("текст второй", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        custom.body["results"][0]["href"],
+        format!("/naselennyy-punkt/pavelets#post-{}", common::OLDER_POST_ID)
+    );
+    connection
+        .execute("UPDATE settlements SET url = NULL WHERE id = ?1", [LEGACY_SETTLEMENT_ID])
+        .unwrap();
+    let legacy = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("текст второй", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        legacy.body["results"][0]["href"],
+        format!("/naselennyy-punkt/{LEGACY_SETTLEMENT_ID}#post-{}", common::OLDER_POST_ID)
+    );
+
+    let created = api(
+        &env.app,
+        Method::POST,
+        "/api/gubernias/ryazan/posts",
+        Some(&cookie),
+        Some(json!({
+            "title": "Жизненный цикл поиска",
+            "body": paragraph_doc("созданный материал"),
+            "category": "Статья",
+            "uyezdId": "uyezd-1897-1",
+            "settlementId": LEGACY_SETTLEMENT_ID
+        })),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let post_id = created.body["id"].as_str().unwrap();
+    let found_created = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("созданный материал", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(found_created.body["results"][0]["id"], post_id);
+    assert_eq!(
+        found_created.body["results"][0]["href"],
+        format!("/naselennyy-punkt/{LEGACY_SETTLEMENT_ID}#post-{post_id}")
+    );
+
+    let edited = api(
+        &env.app,
+        Method::PATCH,
+        &format!("/api/gubernias/ryazan/posts/{post_id}"),
+        Some(&cookie),
+        Some(json!({
+            "title": "Жизненный цикл поиска",
+            "body": paragraph_doc("отредактированный материал"),
+            "category": "Статья",
+            "targetGuberniaId": "tula",
+            "uyezdId": "uyezd-1897-9"
+        })),
+    )
+    .await;
+    assert_eq!(edited.status, StatusCode::OK);
+    let old = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("созданный материал", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(old.body["total"], 0);
+    let moved = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("отредактированный материал", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        moved.body["results"][0]["href"],
+        format!("/guberniya/tulskaya#post-{post_id}")
+    );
+
+    let deleted = api(
+        &env.app,
+        Method::DELETE,
+        &format!("/api/gubernias/tula/posts/{post_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let gone = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("отредактированный материал", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(gone.body["total"], 0);
+}
+
+#[tokio::test]
+async fn post_search_paginates_all_matches_after_matching_in_stable_order() {
+    let env = TestEnv::new();
+    let mut connection =
+        dimasik_backend::db::open_database(&env.config.database_path).expect("database opens");
+    let transaction = connection.transaction().unwrap();
+    for index in 0..53 {
+        transaction
+            .execute(
+                "INSERT INTO posts
+                 (id, province_id, title, body_json, created_at, updated_at, created_ms, position)
+                 VALUES (?1, 'tula', ?2, ?3, '2026-01-01T00:00:00.000Z',
+                         '2026-01-01T00:00:00.000Z', 1000, ?4)",
+                rusqlite::params![
+                    format!("page-{index:02}"),
+                    format!("страница {index:02}"),
+                    paragraph_doc("полное тело").to_string(),
+                    index
+                ],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+
+    let first = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("страница", 0),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::OK);
+    assert_eq!(first.body["total"], 53);
+    assert_eq!(first.body["offset"], 0);
+    assert_eq!(first.body["nextOffset"], 50);
+    assert_eq!(first.body["results"].as_array().unwrap().len(), 50);
+    assert_eq!(first.body["results"][0]["id"], "page-00");
+    assert_eq!(first.body["results"][49]["id"], "page-49");
+
+    let last = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("страница", 50),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(last.body["total"], 53);
+    assert_eq!(last.body["offset"], 50);
+    assert_eq!(last.body["nextOffset"], Value::Null);
+    assert_eq!(last.body["results"].as_array().unwrap().len(), 3);
+    assert_eq!(last.body["results"][0]["id"], "page-50");
+    assert_eq!(last.body["results"][2]["id"], "page-52");
+
+    let beyond = api(
+        &env.app,
+        Method::GET,
+        &post_search_uri("страница", 999),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(beyond.body["total"], 53);
+    assert_eq!(beyond.body["results"], json!([]));
+    assert_eq!(beyond.body["nextOffset"], Value::Null);
 }
 
 #[tokio::test]

@@ -21,6 +21,7 @@ import { districtLabelCollection } from '../lib/district-labels';
 import type { SiteSettings } from '../lib/site-settings';
 import SettlementEditor from '../app/guberniya/[slug]/SettlementEditor';
 import SettlementListPanel from './SettlementListPanel';
+import MapPostSearch from './MapPostSearch';
 import styles from './GuberniasMap.module.css';
 
 // Next.js does not place the worker's shared module beside its bundled URL.
@@ -143,6 +144,9 @@ type GuberniasMapProps = {
   settings: SiteSettings;
   /** Homepage tab deep-linked from the URL; unknown query values stay gubernias. */
   initialView: HomeView;
+  /** Homepage disclosure state and the region controlled by its header button. */
+  searchVisible: boolean;
+  searchRegionId: string;
 };
 
 function boundsForGeometry(geometry: Polygon | MultiPolygon): FeatureBounds {
@@ -1052,6 +1056,8 @@ export default function GuberniasMap({
   provinces,
   settings,
   initialView,
+  searchVisible,
+  searchRegionId,
 }: GuberniasMapProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1881,6 +1887,9 @@ export default function GuberniasMap({
         view === 'settlements' ? 'Карта населённых пунктов' : 'Интерактивная карта губерний'
       }
     >
+      <div id={searchRegionId} hidden={!searchVisible}>
+        <MapPostSearch view={view} />
+      </div>
       <div className={styles.viewport}>
         <div ref={containerRef} className={styles.map} />
 

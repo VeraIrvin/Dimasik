@@ -128,6 +128,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/gubernias/{id}",
             patch(routes::gubernia_patch).delete(routes::gubernia_delete),
         )
+        .route("/api/posts/search", get(routes::posts_search))
         .route("/api/gubernias/{id}/posts", post(routes::post_create))
         .route(
             "/api/gubernias/{id}/posts/{post_id}",

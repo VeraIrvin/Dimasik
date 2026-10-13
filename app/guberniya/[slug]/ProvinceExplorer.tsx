@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PublishedGubernia, PublishedOption, Settlement } from "@/lib/gubernia-publications";
 import UyezdsMap from "@/components/UyezdsMap";
@@ -19,6 +19,8 @@ type Props = {
   categories: string[];
   settlementTypes: string[];
   isAdmin: boolean;
+  backHref: string;
+  highlightQuery: string;
 };
 
 export default function ProvinceExplorer({
@@ -28,6 +30,8 @@ export default function ProvinceExplorer({
   categories,
   settlementTypes,
   isAdmin,
+  backHref,
+  highlightQuery,
 }: Props) {
   const router = useRouter();
   const [districts, setDistricts] = useState<DistrictOption[]>([]);
@@ -36,6 +40,26 @@ export default function ProvinceExplorer({
   const [year, setYear] = useState("");
   const [category, setCategory] = useState("");
   const [referenceExpanded, setReferenceExpanded] = useState(false);
+  useEffect(() => {
+    if (!highlightQuery) return;
+
+    function revealHashTarget() {
+      if (!window.location.hash.startsWith("#post-")) return;
+      setDistrictId(null);
+      setSettlementId(null);
+      setYear("");
+      setCategory("");
+    }
+
+    revealHashTarget();
+    window.addEventListener("hashchange", revealHashTarget);
+    window.addEventListener("popstate", revealHashTarget);
+    return () => {
+      window.removeEventListener("hashchange", revealHashTarget);
+      window.removeEventListener("popstate", revealHashTarget);
+    };
+  }, [highlightQuery]);
+
 
   const provinceSettlements = useMemo(
     () => settlements.filter((settlement) => settlement.guberniaId === gubernia.id),
@@ -149,7 +173,7 @@ export default function ProvinceExplorer({
 
   return (
     <>
-      <ProvinceQuickNavigation>
+      <ProvinceQuickNavigation backHref={backHref}>
         <ProvinceFilterControls idPrefix="province-toolbar" compact {...filterControlsProps} />
       </ProvinceQuickNavigation>
 
@@ -216,6 +240,7 @@ export default function ProvinceExplorer({
           ariaLabel="Сообщения губернии"
           emptyMessage="По выбранным фильтрам сообщений нет."
           keepSidebarWhenEmpty
+          highlightQuery={highlightQuery}
         />
       ) : null}
       <span className={styles.visuallyHidden} role="status">
