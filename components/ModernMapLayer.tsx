@@ -136,6 +136,7 @@ class ModernMapLayerHost implements IControl {
   onAdd(): HTMLElement {
     this.element = document.createElement('div');
     this.element.className = `maplibregl-ctrl ${styles.control}`;
+    this.element.dataset.modernMapControl = '';
     return this.element;
   }
 

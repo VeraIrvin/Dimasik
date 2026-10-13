@@ -17,6 +17,29 @@
   overflow: hidden;
   --modern-map-stack-height: 126px;
   --modern-map-attribution-height: 0px;
+  --home-overview-height: 47px;
+  --home-control-column-height: max(66px, var(--modern-map-control-height, 40px));
+  --home-control-before: calc((var(--home-control-column-height) - var(--modern-map-control-height, 40px)) / 2);
+  --home-control-after: var(--home-control-before);
+}
+
+/* The native corner owns attribution; the layer and zoom form two columns. */
+.shell :global(.maplibregl-ctrl-bottom-right) > :global([data-modern-map-control]) {
+  margin: var(--home-control-before) 52px calc(10px + var(--home-control-after)) 0;
+  max-width: calc(100vw - 62px);
+}
+
+.shell :global(.maplibregl-ctrl-bottom-right) > :global(.maplibregl-ctrl-group) {
+  position: absolute;
+  right: 10px;
+  bottom: calc(var(--modern-map-attribution-height) + 10px + (var(--home-control-column-height) - 66px) / 2);
+  margin: 0;
+}
+
+.settlementView .viewport {
+  --home-control-column-height: calc(var(--home-overview-height) + 6px + var(--modern-map-control-height, 40px));
+  --home-control-before: calc(var(--home-overview-height) + 6px);
+  --home-control-after: 0px;
 }
 
 /* Two classes so the MapLibre base stylesheet cannot re-position the canvas host. */
@@ -262,11 +285,11 @@
   z-index: 2;
 }
 
-/* The settlement list owns the left edge; keep its overview clear on the right. */
+/* The settlement overview shares the layer's right edge, above it. */
 .settlementView .extentPanel {
-  right: 60px;
+  right: 52px;
   left: auto;
-  bottom: calc(var(--modern-map-stack-height) + 10px);
+  bottom: calc(var(--modern-map-attribution-height) + 10px + var(--modern-map-control-height, 40px) + 6px);
 }
 
 .extentButton {
@@ -545,6 +568,13 @@
   cursor: default;
 }
 
+/* Lift centered tabs out of the corner controls on narrower maps. */
+@media (max-width: 960px) {
+  .shell .viewSwitch {
+    bottom: calc(var(--modern-map-stack-height) + 30px);
+  }
+}
+
 /* The tablet list must also clear the wider settlement overview above the stack. */
 @media (min-width: 561px) and (max-width: 720px) {
   .settlementView .viewport > aside {
@@ -595,11 +625,11 @@
     font-size: 12.5px;
   }
 
-  /* Captions sit above the overview, which itself clears the native stack. */
+  /* Keep the caption above the raised tabs and both corner columns. */
   .periodCaption {
     top: auto;
     right: 12px;
-    bottom: calc(var(--modern-map-stack-height) + 70px);
+    bottom: calc(var(--modern-map-stack-height) + 90px);
   }
 
   .periodCaption span {
@@ -610,15 +640,15 @@
     font-size: 13px;
   }
 
-  /* Keep the overview clear of zoom, the layer button, tabs and scale. */
+  /* The province overview remains on the left, above the scale. */
   .extentPanel {
     right: auto;
-    bottom: calc(var(--modern-map-stack-height) + 10px);
+    bottom: calc(48px + var(--modern-map-attribution-height));
     left: 10px;
   }
 
   .settlementView .extentPanel {
-    right: 56px;
+    right: 52px;
     left: auto;
   }
 
@@ -633,7 +663,6 @@
 
   /* Centered tabs stay clear of the extent button above the scale control. */
   .viewSwitch {
-    bottom: calc(12px + var(--modern-map-attribution-height));
     gap: 2px;
     padding: 3px;
   }

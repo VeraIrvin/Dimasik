@@ -1069,6 +1069,7 @@ export default function GuberniasMap({
 }: GuberniasMapProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
+  const extentPanelRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const collectionRef = useRef<GuberniasCollection | null>(null);
   const publishedIdsRef = useRef<Set<string>>(new Set());
@@ -1114,6 +1115,22 @@ export default function GuberniasMap({
   const [createStatus, setCreateStatus] = useState<CreateStatus>('idle');
   const [createError, setCreateError] = useState('');
   const modernLayer = useModernMapLayer(status === 'ready' ? mapRef.current : null);
+
+  useEffect(() => {
+    const panel = extentPanelRef.current;
+    const viewport = panel?.parentElement;
+    if (!panel || !viewport) return;
+    const measure = () => {
+      viewport.style.setProperty('--home-overview-height', `${panel.offsetHeight}px`);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    measure();
+    return () => {
+      observer.disconnect();
+      viewport.style.removeProperty('--home-overview-height');
+    };
+  }, []);
 
   /** Point features keep the store order; ids stay stable across updates. */
   const settlementData = useMemo(() => createSettlementCollection(settlements), [settlements]);
@@ -2037,7 +2054,7 @@ export default function GuberniasMap({
           ) : null}
         </aside>
 
-        <div className={styles.extentPanel}>
+        <div ref={extentPanelRef} className={styles.extentPanel}>
           <button
             className={styles.extentButton}
             type="button"
