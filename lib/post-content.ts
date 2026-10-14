@@ -131,7 +131,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function normalizeLinkHref(value: unknown): string {
+export function normalizeLinkHref(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.length > MAX_LINK_HREF_LENGTH) fail();
   if (CONTROL_CHARACTER_PATTERN.test(value) || value.includes("\\")) fail();
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  normalizeLinkHref,
   normalizePostDocument,
   truncatePostDocument,
   POST_DOCUMENT_PREVIEW_MAX_CHARACTERS,
@@ -43,6 +44,38 @@ function forumClipboardDocument() {
     }],
   };
 }
+
+test("link validation preserves supported URLs and rejects unsafe boundaries", () => {
+  const absolutePrefix = "https://example.com/";
+  const maximumLengthHref = `${absolutePrefix}${"x".repeat(2_048 - absolutePrefix.length)}`;
+  assert.equal(normalizeLinkHref(maximumLengthHref), maximumLengthHref);
+  for (const href of [
+    "/archive/1?view=full#page-2",
+    "https://example.com/source?q=1#entry",
+    "http://127.0.0.1:3000/path",
+  ]) {
+    assert.equal(normalizeLinkHref(href), href);
+  }
+
+  for (const href of [
+    null,
+    "",
+    "#footnote-1",
+    "//example.com/path",
+    "example.com/path",
+    "mailto:editor@example.com",
+    "javascript:alert(1)",
+    "data:text/html,test",
+    "https://",
+    "https://#footnote-1",
+    "https://exa\\mple.com",
+    "https://example.com/\nnext",
+    "/archive/\u0000hidden",
+    `${maximumLengthHref}x`,
+  ]) {
+    assert.throws(() => normalizeLinkHref(href), PostContentValidationError, String(href));
+  }
+});
 
 test("forum clipboard text retains line breaks and safe formatting", () => {
   const normalized = normalizePostDocument(forumClipboardDocument());

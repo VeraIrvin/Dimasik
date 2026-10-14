@@ -18,7 +18,7 @@ import { TableKit } from "@tiptap/extension-table";
 import { cellAround, isInTable, selectedRect } from "@tiptap/pm/tables";
 import { EditorContent, useEditor, useEditorState, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
-import type { PostDocument } from "@/lib/post-content";
+import { normalizeLinkHref, type PostDocument } from "@/lib/post-content";
 import styles from "./RichTextField.module.css";
 
 const MAX_TABLE_ROWS = 500;
@@ -35,17 +35,23 @@ const ALIGNMENT_LABELS: Record<Alignment, string> = {
 };
 
 /**
- * Mirrors the server rule for links: http(s) addresses and same-origin paths
- * survive, everything else (javascript:, mailto:, //host) is rejected.
+ * Completes manually entered schemeless hosts, then applies the same URL rule
+ * used when a document is saved. Fragment-only Word footnote anchors have no
+ * matching target in the stored schema, so pasted links for them are omitted.
  */
 function normalizeHref(raw: string): string | null {
   const href = raw.trim();
-  if (!href || href.startsWith("//")) return null;
-  if (href.startsWith("/")) return href;
-  if (/^https?:\/\//i.test(href)) return href;
-  // A missing scheme is fine: it is completed with the editor's default one.
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
-  return `https://${href}`;
+  if (!href || href.startsWith("#")) return null;
+
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(href);
+  if (hasScheme && !/^https?:\/\//i.test(href)) return null;
+  const candidate = href.startsWith("/") || hasScheme ? href : `https://${href}`;
+
+  try {
+    return normalizeLinkHref(candidate);
+  } catch {
+    return null;
+  }
 }
 
 /** `<input type="color">` only accepts the six-digit form. */
